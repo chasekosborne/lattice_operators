@@ -4,14 +4,16 @@ This repository contains a set of python modules for constructing Hadron operato
 
 # Requirements
 
-This code makes extensive use of the SymPy package. You must make sure this Python package has been installed
-before using this library.
+- `numpy>=1.24`
+- `sortedcontainers>=2.4.0`
+- `sympy>=1.12`
+
+Install with:
+
+```bash
+pip install -r requirements.txt
+```
 
 # Docs
 
-To get started, take a look at the documentation in the docs folder.
-
-# Quick Start
-
-There are some example scripts and test scripts in the 'examples' and 'tests' folders, respectively. You can
-run any of these scripts.
+All documentation is contained within the [Github Wiki](https://github.com/chasekosborne/lattice_operators/wiki), alongside user guides to get started using this package.

@@ -102,7 +102,7 @@ class CubicRotation:
       return Momentum(tensorcontraction(tensorproduct(self.matrix, other), (1,2)))
 
     return NotImplemented
-        
+
   def __str__(self):
     return _ROTATIONS[self]
 
@@ -824,7 +824,6 @@ class LittleGroup:
       self._conj_class[el] = conj_class
 
     return conj_class
-  
 
   @property
   def elements(self):

@@ -70,7 +70,6 @@ class GrassmannField(ImmutableDenseNDimArray):
 
     return super().__new__(cls, iterable, shape)
 
-  
   # @ADH - Maybe you can just call the super() and just change Indexed to GrassmannIndexed?
   def _check_symbolic_index(self, index):
     # Check if any index is symbolic:
@@ -103,7 +102,6 @@ class GrassmannField(ImmutableDenseNDimArray):
 
 class GrassmannIndexed(Indexed):
   is_commutative = False
-
 
 
 # @ADH - Do you think this is the fastest way to do this?

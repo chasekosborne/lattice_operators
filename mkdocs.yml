@@ -1,0 +1,21 @@
+site_name: lattice_operators
+
+theme:
+  name: readthedocs
+  highlightjs: true
+  navigation_depth: 4
+  collapse_navigation: true
+  sticky_navigation: true
+  include_homepage_in_sidebar: true
+  titles_only: false
+
+nav:
+  - Home: index.md
+  - Guides:
+      - Constructing Baryons at Rest: guide/ss_baryons_at_rest.md
+      - The Δ++ Baryon: guide/delta_baryon.md
+  - Reference:
+      - QuarkField: reference/QuarkField.md
+      - GrassmanField: reference/GrassmanField.md
+      - GrassmannSymbol: reference/GrassmannSymbol.md
+      - GrassmannIndexed: reference/GrassmannIndexed.md
