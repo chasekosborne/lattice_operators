@@ -72,7 +72,6 @@ class ColorIdx(Idx):
 
 
 class OperatorRepresentation:
-  
   def __init__(self, *operators):
 
     if not operators:
@@ -95,7 +94,7 @@ class OperatorRepresentation:
   @property
   def fermionic(self):
     return self.basis.fermionic
-  
+
   @property
   def dimension(self):
     return self.basis.dimension
@@ -111,7 +110,7 @@ class OperatorRepresentation:
   def littleGroupContents(self, nice=False, use_generators=True):
     contents = dict()
     for lgIrrep in self.little_group.irreps:
-      #print(lgIrrep)
+      print(lgIrrep)
       occurences = S.Zero
       for element in self.little_group.elements:
         occurences += self.getCharacter(element, use_generators) * conjugate(self.little_group.getCharacter(lgIrrep, element))
@@ -148,6 +147,9 @@ class OperatorRepresentation:
       self._characters[lg_element] = char
       return char
 
+  def printlg(self):
+    print(self._rep_matrices)
+
   def getRepresentationMatrix(self, lg_element, use_generators=True):
 
     if lg_element in self._rep_matrices:
@@ -165,7 +167,6 @@ class OperatorRepresentation:
     else:
       self._compute_rep_matrix(lg_element)
       return self._rep_matrices[lg_element]
-      
 
     return self._rep_matrices[lg_element]
 
@@ -188,6 +189,78 @@ class OperatorRepresentation:
       return True
 
     return False
+
+  def _getIrrepMatrixElement(self, irrep, lg_element, row, irrep_matrices=None):
+    if irrep_matrices is None:
+      d_lambda = self.little_group.getCharacter(irrep, E)
+      if d_lambda != 1:
+        raise ValueError(
+            "Multi-dimensional irreps require explicit irrep matrices. "
+            "Pass `irrep_matrices` as either a callable `(irrep, element) -> Matrix` "
+            "or a dict like `{irrep: {element: Matrix}}`."
+        )
+      return self.little_group.getCharacter(irrep, lg_element)
+
+    if callable(irrep_matrices):
+      gamma_R = irrep_matrices(irrep, lg_element)
+    else:
+      gamma_R = irrep_matrices[irrep][lg_element]
+
+    if not isinstance(gamma_R, Matrix):
+      gamma_R = Matrix(gamma_R)
+
+    if gamma_R.rows != gamma_R.cols:
+      raise ValueError("Irrep matrix must be square")
+
+    if row < 0 or row >= gamma_R.rows:
+      raise ValueError("Requested irrep row is out of bounds")
+
+    return gamma_R[row, row]
+
+  def getDiracPauliIrrepMatrices(self):
+    # @CKO -  This is intended for O_h^D at rest. Other irreps (e.g. G2/H) must be
+    #         supplied explicitly via `irrep_matrices`.
+
+    spinor_representation.gammaRep = GammaRep.DIRAC_PAULI
+
+    g1g = dict()
+    g1u = dict()
+    for R in self.little_group.elements:
+      S_R = spinor_representation.rotation(R, False)
+      g1g[R] = Matrix(S_R[:2, :2])
+      g1u[R] = Matrix(S_R[2:, 2:])
+
+    return {"G1g": g1g, "G1u": g1u}
+
+  def getProjectionMatrix(self, irrep, row=1, irrep_matrices=None, use_generators=True):
+    row_idx = row - 1
+    g = self.little_group.order
+    d_Lambda = self.little_group.getCharacter(irrep, E)
+
+    P = zeros(self.dimension)
+    for R in self.little_group.elements:
+      gamma_rr = self._getIrrepMatrixElement(irrep, R, row_idx, irrep_matrices)
+      W_R = self.getRepresentationMatrix(R, use_generators)
+      P += conjugate(gamma_rr) * W_R.T
+
+    return simplify(P * S(d_Lambda) / S(g))
+
+  def getProjectionMatrices(self, irrep_matrices=None, use_generators=True):
+    projections = dict()
+    for irrep in self.little_group.irreps:
+      d_lambda = int(self.little_group.getCharacter(irrep, E))
+      if d_lambda == 1:
+        projections[irrep] = self.getProjectionMatrix(
+            irrep, row=1, irrep_matrices=irrep_matrices, use_generators=use_generators
+        )
+      else:
+        row_projections = dict()
+        for row in range(1, d_lambda + 1):
+          row_projections[row] = self.getProjectionMatrix(
+              irrep, row=row, irrep_matrices=irrep_matrices, use_generators=use_generators
+          )
+        projections[irrep] = row_projections
+    return projections
 
 
 class OperatorBasis:
