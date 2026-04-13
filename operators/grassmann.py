@@ -190,7 +190,6 @@ def grassmann_expand(expr):
   return array
 '''
 
-  
 # @ADH - Need to make sure this function is right and deals with powers appropriately
 def _grassmann_simplify(expr):
 

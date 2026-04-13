@@ -6,9 +6,10 @@ from sortedcontainers import SortedSet
 
 from sympy.functions.elementary.miscellaneous import sqrt
 from sympy.matrices import eye, Identity, MatrixSymbol
-from sympy import pi, Array, Matrix
+from sympy import pi, Array, Matrix, S
 from sympy import tensorcontraction, tensorproduct
 from sympy import cos, sin, sqrt
+from sympy.physics.wigner import wigner_d
 
 from .tensors import GammaRep, Gamma
 
@@ -983,7 +984,7 @@ class SpinorRepresentation:
       repr_mat = -repr_mat
 
     return repr_mat
-  
+
   def _setup_rotations(self):
     substitutions = [(I,eye(4)), (g1,self.gamma.one), (g2,self.gamma.two), (g3,self.gamma.three)]
 
@@ -1003,3 +1004,266 @@ class SpinorRepresentation:
 
 
 spinor_representation = SpinorRepresentation()
+
+
+# Cached Dirac–Pauli spinor irrep matrices for O_h^D at rest. Even-parity (g) and
+# full (g+u) are cached separately so callers can avoid building u irreps by default.
+_FERMIONIC_SPINOR_IRREP_MATRICES_G = None
+_FERMIONIC_SPINOR_IRREP_MATRICES_GU = None
+
+_FERMIONIC_SPINOR_G_LABELS = frozenset(("G1g", "G2g", "Hg"))
+_FERMIONIC_SPINOR_U_LABELS = frozenset(("G1u", "G2u", "Hu"))
+
+# Populated on first lazy access (or filled when building the bulk spinor tables).
+_LAZY_H_PROPER = None
+_LAZY_J52_PROPER = None
+_LAZY_G2G_DICT = None
+_LAZY_G2U_DICT = None
+
+
+def _proper_part(rotation):
+  return CubicRotation(rotation.angle, rotation.axis, False)
+
+
+def _wigner_j_representation(j):
+  """Build spin-j representation matrices for proper octahedral rotations."""
+  rep = dict()
+  for R in _OCTAHEDRAL_GROUP:
+    a, b, c = _EULER_ANGLES[R]
+    rep[R] = Matrix(wigner_d(j, a, b, c))
+  return rep
+
+
+def _extend_with_parity(proper_rep, parity_sign=1):
+  """Extend proper-rotation matrices to O_h^D by assigning parity sign."""
+  full_rep = dict()
+  for R in _POINT_GROUP:
+    mat = proper_rep[_proper_part(R)]
+    if R.parity:
+      mat = parity_sign * mat
+    full_rep[R] = Matrix(mat)
+  return full_rep
+
+
+def _extract_irrep_from_rep(full_rep, irrep, little_group):
+  """Project one irrep copy out of a (possibly reducible) representation."""
+  any_R = next(iter(full_rep))
+  dim_rep = full_rep[any_R].rows
+
+  projector = Matrix.zeros(dim_rep)
+  d_irrep = little_group.getCharacter(irrep, E)
+  g_order = little_group.order
+  for R in little_group.elements:
+    projector += little_group.getCharacter(irrep, R).conjugate() * full_rep[R]
+  projector = (d_irrep / g_order) * projector
+
+  basis = projector.columnspace()
+  if len(basis) < d_irrep:
+    raise ValueError("Could not extract full '{}' irrep subspace".format(irrep))
+
+  basis_mat = Matrix.hstack(*basis[:d_irrep])
+  basis_pinv = basis_mat.pinv()
+
+  irrep_rep = dict()
+  for R in little_group.elements:
+    irrep_rep[R] = Matrix(basis_pinv * full_rep[R] * basis_mat)
+
+  return irrep_rep
+
+
+def conjugate_spin_irrep_accessor(accessor, U, conjugated_irreps=("Hg", "Hu")):
+  """Return ``(irrep, R) -> Matrix`` with a fixed change of basis on spin-3/2 irreps.
+
+  If ``Gamma(R)`` are the tabulated ``Hg`` / ``Hu`` matrices in one orthonormal
+  carrier basis (SymPy ``wigner_d`` row/column order) and ``U`` maps that basis to
+  another, an equivalent realization is
+
+  .. math::
+
+      \\Gamma'(R) = U^{\\dagger}\\, \\Gamma(R)\\, U .
+
+  Use the returned callable as ``irrep_matrices`` in ``getProjectionMatrix`` /
+  ``getPartnerRowCoefficientRows``. Other irreps are passed through unchanged.
+
+  Parameters
+  ----------
+  accessor : callable
+      ``(irrep, CubicRotation) -> Matrix``, e.g. from
+      ``OperatorRepresentation.getDiracPauliIrrepAccessor``.
+  U : Matrix
+      Invertible ``4 \\times 4`` matrix (unitary in physical applications).
+  conjugated_irreps : iterable of str
+      Irrep labels to conjugate; default ``("Hg", "Hu")``.
+  """
+  U = Matrix(U)
+  if U.rows != U.cols:
+    raise ValueError("U must be square")
+  if U.rows != 4:
+    raise ValueError("Hg/Hu accessors expect 4 x 4 spin-3/2 matrices")
+  labels = frozenset(conjugated_irreps)
+
+  def wrapped(irrep, rotation):
+    gamma = accessor(irrep, rotation)
+    if irrep in labels:
+      return U.H * Matrix(gamma) * U
+    return gamma
+
+  return wrapped
+
+
+def get_spinor_irrep_matrix(irrep, rotation, include_odd_parity=False):
+  global _LAZY_H_PROPER, _LAZY_J52_PROPER, _LAZY_G2G_DICT, _LAZY_G2U_DICT
+
+  if rotation not in _POINT_GROUP:
+    raise ValueError("rotation must be an element of the tabulated O_h point group")
+
+  if irrep in _FERMIONIC_SPINOR_U_LABELS and not include_odd_parity:
+    raise ValueError(
+        "Odd-parity irrep '{}' requires include_odd_parity=True".format(irrep)
+    )
+
+  def _from_bulk():
+    if _FERMIONIC_SPINOR_IRREP_MATRICES_GU is not None:
+      key = ("Oh", irrep)
+      if key in _FERMIONIC_SPINOR_IRREP_MATRICES_GU:
+        return _FERMIONIC_SPINOR_IRREP_MATRICES_GU[key][rotation]
+    if _FERMIONIC_SPINOR_IRREP_MATRICES_G is not None:
+      key = ("Oh", irrep)
+      if key in _FERMIONIC_SPINOR_IRREP_MATRICES_G:
+        return _FERMIONIC_SPINOR_IRREP_MATRICES_G[key][rotation]
+    return None
+
+  hit = _from_bulk()
+  if hit is not None:
+    return hit
+
+  spinor_representation.gammaRep = GammaRep.DIRAC_PAULI
+
+  if irrep == "G1g":
+    S_R = spinor_representation.rotation(rotation, False)
+    return Matrix(S_R[:2, :2])
+  if irrep == "G1u":
+    S_R = spinor_representation.rotation(rotation, False)
+    return Matrix(S_R[2:, 2:])
+
+  if irrep in ("Hg", "Hu"):
+    if _LAZY_H_PROPER is None:
+      _LAZY_H_PROPER = _wigner_j_representation(S(3) / 2)
+    sign = 1 if irrep == "Hg" else -1
+    mat = _LAZY_H_PROPER[_proper_part(rotation)]
+    if rotation.parity:
+      mat = sign * mat
+    return Matrix(mat)
+
+  if irrep == "G2g":
+    if _LAZY_G2G_DICT is None:
+      lg_ohd = LittleGroup(False, P0)
+      if _LAZY_J52_PROPER is None:
+        _LAZY_J52_PROPER = _wigner_j_representation(S(5) / 2)
+      j52g = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=1)
+      _LAZY_G2G_DICT = _extract_irrep_from_rep(j52g, "G2g", lg_ohd)
+    return _LAZY_G2G_DICT[rotation]
+
+  if irrep == "G2u":
+    if _LAZY_G2U_DICT is None:
+      lg_ohd = LittleGroup(False, P0)
+      if _LAZY_J52_PROPER is None:
+        _LAZY_J52_PROPER = _wigner_j_representation(S(5) / 2)
+      j52u = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=-1)
+      _LAZY_G2U_DICT = _extract_irrep_from_rep(j52u, "G2u", lg_ohd)
+    return _LAZY_G2U_DICT[rotation]
+
+  raise ValueError("Unknown fermionic spinor irrep '{}'".format(irrep))
+
+
+def get_spinor_irrep_matrices(include_odd_parity=False):
+  global _FERMIONIC_SPINOR_IRREP_MATRICES_G, _FERMIONIC_SPINOR_IRREP_MATRICES_GU
+  global _LAZY_H_PROPER, _LAZY_J52_PROPER, _LAZY_G2G_DICT, _LAZY_G2U_DICT
+
+  if not include_odd_parity:
+    if _FERMIONIC_SPINOR_IRREP_MATRICES_GU is not None:
+      return {
+          k: v
+          for k, v in _FERMIONIC_SPINOR_IRREP_MATRICES_GU.items()
+          if k[1] in _FERMIONIC_SPINOR_G_LABELS
+      }
+    if _FERMIONIC_SPINOR_IRREP_MATRICES_G is not None:
+      return _FERMIONIC_SPINOR_IRREP_MATRICES_G
+
+  if include_odd_parity:
+    if _FERMIONIC_SPINOR_IRREP_MATRICES_GU is not None:
+      return _FERMIONIC_SPINOR_IRREP_MATRICES_GU
+    if _FERMIONIC_SPINOR_IRREP_MATRICES_G is not None:
+      spinor_representation.gammaRep = GammaRep.DIRAC_PAULI
+      lg_ohd = LittleGroup(False, P0)
+      g1u = dict()
+      for R in _POINT_GROUP:
+        S_R = spinor_representation.rotation(R, False)
+        g1u[R] = Matrix(S_R[2:, 2:])
+      if _LAZY_H_PROPER is None:
+        _LAZY_H_PROPER = _wigner_j_representation(S(3) / 2)
+      hu = _extend_with_parity(_LAZY_H_PROPER, parity_sign=-1)
+      if _LAZY_J52_PROPER is None:
+        _LAZY_J52_PROPER = _wigner_j_representation(S(5) / 2)
+      j52u = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=-1)
+      if _LAZY_G2U_DICT is None:
+        _LAZY_G2U_DICT = _extract_irrep_from_rep(j52u, "G2u", lg_ohd)
+      g2u = _LAZY_G2U_DICT
+      _FERMIONIC_SPINOR_IRREP_MATRICES_GU = {
+          **_FERMIONIC_SPINOR_IRREP_MATRICES_G,
+          ("Oh", "G1u"): g1u,
+          ("Oh", "G2u"): g2u,
+          ("Oh", "Hu"): hu,
+      }
+      return _FERMIONIC_SPINOR_IRREP_MATRICES_GU
+
+  spinor_representation.gammaRep = GammaRep.DIRAC_PAULI
+
+  # Little group at rest for fermionic irreps
+  lg_ohd = LittleGroup(False, P0)
+
+  # G1: use the spinor representation blocks in Dirac-Pauli basis
+  g1g = dict()
+  g1u = dict() if include_odd_parity else None
+  for R in _POINT_GROUP:
+    S_R = spinor_representation.rotation(R, False)
+    g1g[R] = Matrix(S_R[:2, :2])
+    if include_odd_parity:
+      g1u[R] = Matrix(S_R[2:, 2:])
+
+  # H: spin-3/2 representation of proper cubic rotations, extended with parity
+  if _LAZY_H_PROPER is None:
+    _LAZY_H_PROPER = _wigner_j_representation(S(3) / 2)
+  h_proper = _LAZY_H_PROPER
+  hg = _extend_with_parity(h_proper, parity_sign=1)
+
+  # G2: extract from spin-5/2 reducible representation (G2 + H)
+  if _LAZY_J52_PROPER is None:
+    _LAZY_J52_PROPER = _wigner_j_representation(S(5) / 2)
+  j52_proper = _LAZY_J52_PROPER
+  j52g = _extend_with_parity(j52_proper, parity_sign=1)
+  if _LAZY_G2G_DICT is None:
+    _LAZY_G2G_DICT = _extract_irrep_from_rep(j52g, "G2g", lg_ohd)
+  g2g = _LAZY_G2G_DICT
+
+  _FERMIONIC_SPINOR_IRREP_MATRICES_G = {
+      ("Oh", "G1g"): g1g,
+      ("Oh", "G2g"): g2g,
+      ("Oh", "Hg"): hg,
+  }
+
+  if include_odd_parity:
+    hu = _extend_with_parity(h_proper, parity_sign=-1)
+    j52u = _extend_with_parity(j52_proper, parity_sign=-1)
+    if _LAZY_G2U_DICT is None:
+      _LAZY_G2U_DICT = _extract_irrep_from_rep(j52u, "G2u", lg_ohd)
+    g2u = _LAZY_G2U_DICT
+    _FERMIONIC_SPINOR_IRREP_MATRICES_GU = {
+        **_FERMIONIC_SPINOR_IRREP_MATRICES_G,
+        ("Oh", "G1u"): g1u,
+        ("Oh", "G2u"): g2u,
+        ("Oh", "Hu"): hu,
+    }
+    return _FERMIONIC_SPINOR_IRREP_MATRICES_GU
+
+  return _FERMIONIC_SPINOR_IRREP_MATRICES_G
