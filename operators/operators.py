@@ -3,14 +3,16 @@ from sortedcontainers import SortedSet
 from collections import OrderedDict
 from collections import defaultdict
 
-from sympy import zeros, Expr, Idx, get_indices, Array, conjugate, Matrix, Transpose, IndexedBase, trace, Indexed
+from sympy import zeros, Expr, Idx, get_indices, Array, conjugate, Matrix, Transpose, IndexedBase, trace, Indexed, im
 from sympy import eye, Integer, S
 from sympy import simplify
+from sympy import gcd, cancel, sign
 from sympy import Add
 from sympy import Sum
 from sympy import expand
 
-from .cubic_rotations import spinor_representation, LittleGroup, E
+from .cubic_rotations import spinor_representation, LittleGroup, E, get_spinor_irrep_matrices
+from .cubic_rotations import get_spinor_irrep_matrix
 from .cubic_rotations import _GENERATORS as GENERATORS
 from .cubic_rotations import P0
 from .grassmann import grassmann_simplify, coefficients, GrassmannField
@@ -190,20 +192,34 @@ class OperatorRepresentation:
 
     return False
 
-  def _getIrrepMatrixElement(self, irrep, lg_element, row, irrep_matrices=None):
+  def _getIrrepMatrix(self, irrep, lg_element, irrep_matrices=None):
     if irrep_matrices is None:
-      d_lambda = self.little_group.getCharacter(irrep, E)
-      if d_lambda != 1:
-        raise ValueError(
-            "Multi-dimensional irreps require explicit irrep matrices. "
-            "Pass `irrep_matrices` as either a callable `(irrep, element) -> Matrix` "
-            "or a dict like `{irrep: {element: Matrix}}`."
-        )
-      return self.little_group.getCharacter(irrep, lg_element)
+      raise ValueError(
+          "Tabulated irrep matrices are required for projection. "
+          "Pass `irrep_matrices` as either a callable `(irrep, element) -> Matrix` "
+          "or a dict like `{irrep: {element: Matrix}}`."
+      )
 
     if callable(irrep_matrices):
       gamma_R = irrep_matrices(irrep, lg_element)
+      if gamma_R is None:
+        raise KeyError(
+            "No tabulated irrep matrix found for irrep '{}' and element '{}'".format(
+                irrep, lg_element
+            )
+        )
     else:
+      # irrep_matrices is expected to be a dict {irrep: {element: Matrix}}.
+      if irrep not in irrep_matrices:
+        raise KeyError(
+            "No tabulated irrep matrices found for irrep '{}'".format(irrep)
+        )
+      if lg_element not in irrep_matrices[irrep]:
+        raise KeyError(
+            "No tabulated irrep matrix found for irrep '{}' and element '{}'".format(
+                irrep, lg_element
+            )
+        )
       gamma_R = irrep_matrices[irrep][lg_element]
 
     if not isinstance(gamma_R, Matrix):
@@ -212,40 +228,122 @@ class OperatorRepresentation:
     if gamma_R.rows != gamma_R.cols:
       raise ValueError("Irrep matrix must be square")
 
+    return gamma_R
+
+  def _getIrrepMatrixElement(self, irrep, lg_element, row, col=None, irrep_matrices=None):
+    gamma_R = self._getIrrepMatrix(irrep, lg_element, irrep_matrices=irrep_matrices)
+    if col is None:
+      col = row
+
     if row < 0 or row >= gamma_R.rows:
       raise ValueError("Requested irrep row is out of bounds")
+    if col < 0 or col >= gamma_R.cols:
+      raise ValueError("Requested irrep column is out of bounds")
 
-    return gamma_R[row, row]
+    return gamma_R[row, col]
 
-  def getDiracPauliIrrepMatrices(self):
-    # @CKO -  This is intended for O_h^D at rest. Other irreps (e.g. G2/H) must be
-    #         supplied explicitly via `irrep_matrices`.
+  def getDiracPauliIrrepMatrices(self, include_odd_parity=False):
+    # @CKO -  This and accessor is intended only for O_h^D at rest
+    all_mats = get_spinor_irrep_matrices(include_odd_parity=include_odd_parity)
+    lg_name = self.little_group.little_group
 
-    spinor_representation.gammaRep = GammaRep.DIRAC_PAULI
+    irrep_mats = dict()
+    for (group_name, irrep_label), mats in all_mats.items():
+      if group_name == lg_name and irrep_label in self.little_group.irreps:
+        irrep_mats[irrep_label] = {
+            R: mats[R] for R in self.little_group.elements if R in mats
+        }
 
-    g1g = dict()
-    g1u = dict()
-    for R in self.little_group.elements:
-      S_R = spinor_representation.rotation(R, False)
-      g1g[R] = Matrix(S_R[:2, :2])
-      g1u[R] = Matrix(S_R[2:, 2:])
+    return irrep_mats
 
-    return {"G1g": g1g, "G1u": g1u}
+  def getDiracPauliIrrepAccessor(self, include_odd_parity=False):
+    if self.little_group.little_group != "Oh":
+      raise NotImplementedError(
+          "Dirac–Pauli irrep accessor is only implemented for the Oh little group at rest."
+      )
+
+    def accessor(irrep, element):
+      if irrep not in self.little_group.irreps:
+        raise KeyError("irrep '{}' is not in this little group".format(irrep))
+      return get_spinor_irrep_matrix(irrep, element, include_odd_parity=include_odd_parity)
+
+    return accessor
 
   def getProjectionMatrix(self, irrep, row=1, irrep_matrices=None, use_generators=True):
+    if irrep_matrices is None:
+      raise ValueError(
+          "Tabulated irrep matrices are required. "
+          "Pass `irrep_matrices` from `getDiracPauliIrrepMatrices()`, "
+          "or `getDiracPauliIrrepAccessor()` for on-demand matrices "
+          "(use include_odd_parity=True if you need u irreps)."
+      )
+
     row_idx = row - 1
     g = self.little_group.order
     d_Lambda = self.little_group.getCharacter(irrep, E)
 
     P = zeros(self.dimension)
     for R in self.little_group.elements:
-      gamma_rr = self._getIrrepMatrixElement(irrep, R, row_idx, irrep_matrices)
+      gamma_rr = self._getIrrepMatrixElement(
+          irrep, R, row_idx, irrep_matrices=irrep_matrices
+      )
       W_R = self.getRepresentationMatrix(R, use_generators)
       P += conjugate(gamma_rr) * W_R.T
 
-    return simplify(P * S(d_Lambda) / S(g))
+    P = simplify(P * S(d_Lambda) / S(g))
+    if int(d_Lambda) > 2:
+      # Spin-3/2 (Hg/Hu) Wigner matrices leave entries as powers of (-1);
+      # expanding in complex form collapses them to rationals / 0 / 1 in the
+      # operator basis (same matrix as before; only the display/canonical form).
+      return P.applyfunc(lambda z: simplify(expand(z, complex=True)))
+    return P
+
+  def getRowMixingProjectionMatrix(
+      self, irrep, target_row, source_row=1, irrep_matrices=None, use_generators=True
+  ):
+    """Return row-mixing projection matrix P^(Lambda,target<-source).
+
+    Implements the coefficient map used in step (e), using off-diagonal irrep
+    matrix elements Gamma_{target,source}(R).
+    """
+    # Paper row labels for G1 are opposite to the internal 2x2 tabulation order.
+    # Keep projection rows unchanged and remap only for partner-row transport.
+    if irrep in ("G1g", "G1u"):
+      row_map = {1: 2, 2: 1}
+      if target_row not in row_map or source_row not in row_map:
+        raise ValueError("G1 irreps only have rows 1 and 2")
+      target_idx = row_map[target_row] - 1
+      source_idx = row_map[source_row] - 1
+    else:
+      target_idx = target_row - 1
+      source_idx = source_row - 1
+    g = self.little_group.order
+    d_lambda = self.little_group.getCharacter(irrep, E)
+
+    P = zeros(self.dimension)
+    for R in self.little_group.elements:
+      gamma_ts = self._getIrrepMatrixElement(
+          irrep, R, target_idx, source_idx, irrep_matrices=irrep_matrices
+      )
+      W_R = self.getRepresentationMatrix(R, use_generators)
+      # Conventions here are aligned with getProjectionMatrix, which uses
+      # conjugated irrep matrix elements together with W(R)^T.
+      P += conjugate(gamma_ts) * W_R.T
+
+    P = simplify(P * S(d_lambda) / S(g))
+    if int(d_lambda) > 2:
+      return P.applyfunc(lambda z: simplify(expand(z, complex=True)))
+    return P
 
   def getProjectionMatrices(self, irrep_matrices=None, use_generators=True):
+    if irrep_matrices is None:
+      raise ValueError(
+          "Tabulated irrep matrices are required. "
+          "Pass `irrep_matrices` from `getDiracPauliIrrepMatrices()`, "
+          "or `getDiracPauliIrrepAccessor()` for on-demand matrices "
+          "(use include_odd_parity=True if you need u irreps)."
+      )
+
     projections = dict()
     for irrep in self.little_group.irreps:
       d_lambda = int(self.little_group.getCharacter(irrep, E))
@@ -261,6 +359,198 @@ class OperatorRepresentation:
           )
         projections[irrep] = row_projections
     return projections
+
+  def _projected_operator_from_coeffs(self, coeff_row):
+    basis_ops = list(self.basis.operators)
+    if len(coeff_row) != len(basis_ops):
+      raise ValueError("Coefficient row length does not match basis dimension")
+
+    op_sum = S.Zero
+    for coeff, op in zip(coeff_row, basis_ops):
+      if simplify(coeff) == 0:
+        continue
+      op_sum += coeff * op
+
+    if op_sum == S.Zero:
+      return Operator(S.Zero, self.momentum)
+    if isinstance(op_sum, Operator):
+      return op_sum
+    return Operator(op_sum, self.momentum)
+
+  def getLinearlyIndependentProjectedOperators(
+      self, irrep, row=1, irrep_matrices=None, use_generators=True
+  ):
+    # returns a list of linearly independent operators from one projection row
+    P = self.getProjectionMatrix(
+        irrep, row=row, irrep_matrices=irrep_matrices, use_generators=use_generators
+    )
+    r = int(P.rank())
+    if r == 0:
+      return []
+
+    # candidate rows with bookkeeping for "simplicity" ordering.
+    row_data = []
+    for i in range(P.rows):
+      row_vec = P.row(i)
+      entries = [simplify(x) for x in row_vec]
+      nnz = sum(1 for x in entries if x != 0)
+      if nnz == 0:
+        continue
+      real_only = all(simplify(im(x)) == 0 for x in entries)
+      row_data.append((not real_only, nnz, i, Matrix([entries])))
+
+    row_data.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    selected_rows = []
+    selected_indices = []
+    current_rank = 0
+    for _, _, idx, row_mat in row_data:
+      trial = selected_rows + [row_mat]
+      trial_rank = Matrix.vstack(*trial).rank()
+      if trial_rank > current_rank:
+        selected_rows.append(row_mat)
+        selected_indices.append(idx)
+        current_rank = trial_rank
+      if current_rank >= r:
+        break
+
+    projected_ops = []
+    for row_mat in selected_rows:
+      projected_ops.append(self._projected_operator_from_coeffs(list(row_mat)))
+    return projected_ops
+
+  def getLinearlyIndependentProjectedCoefficientRows(
+      self, irrep, row=1, irrep_matrices=None, use_generators=True
+  ):
+    P = self.getProjectionMatrix(
+        irrep, row=row, irrep_matrices=irrep_matrices, use_generators=use_generators
+    )
+    r = int(P.rank())
+    if r == 0:
+      return []
+
+    row_data = []
+    for i in range(P.rows):
+      row_vec = P.row(i)
+      entries = [simplify(x) for x in row_vec]
+      nnz = sum(1 for x in entries if x != 0)
+      if nnz == 0:
+        continue
+      real_only = all(simplify(im(x)) == 0 for x in entries)
+      row_data.append((not real_only, nnz, i, Matrix([entries])))
+    row_data.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    selected_rows = []
+    current_rank = 0
+    for _, _, _, row_mat in row_data:
+      trial = selected_rows + [row_mat]
+      trial_rank = Matrix.vstack(*trial).rank()
+      if trial_rank > current_rank:
+        selected_rows.append(row_mat)
+        current_rank = trial_rank
+      if current_rank >= r:
+        break
+    return selected_rows
+
+  def getPartnerRowCoefficientRows(
+      self, irrep, source_rows, target_row, source_row=1, irrep_matrices=None, use_generators=True
+  ):
+    """Step (e): map coefficient rows from source_row -> target_row."""
+    mixing = self.getRowMixingProjectionMatrix(
+        irrep,
+        target_row=target_row,
+        source_row=source_row,
+        irrep_matrices=irrep_matrices,
+        use_generators=use_generators,
+    )
+    out_rows = []
+    for src in source_rows:
+      src_row = Matrix([list(src)])
+      out_rows.append((src_row * mixing).applyfunc(simplify))
+    return out_rows
+
+  def _format_projected_coefficient_row_raw(self, row_entries, operator_labels=None):
+    basis_ops = list(self.basis.operators)
+    labels = operator_labels if operator_labels is not None else {}
+    if len(row_entries) != len(basis_ops):
+      raise ValueError("Coefficient row length does not match basis dimension")
+    coeffs = [simplify(expand(c, complex=True)) for c in row_entries]
+    nonzero = [c for c in coeffs if simplify(c) != 0]
+    if not nonzero:
+      return "0"
+    common = nonzero[0]
+    for c in nonzero[1:]:
+      common = gcd(common, c)
+    if simplify(common) == 0:
+      common = S.One
+    norm = [cancel(simplify(c / common)) for c in coeffs]
+    first_nz = next((v for v in norm if simplify(v) != 0), None)
+    if first_nz is not None and simplify(sign(first_nz)) < 0:
+      norm = [-v for v in norm]
+    pieces = []
+    for coeff, basis_op in zip(norm, basis_ops):
+      if simplify(coeff) == 0:
+        continue
+      label = labels.get(repr(basis_op), repr(basis_op))
+      if coeff == 1:
+        pieces.append(label)
+      elif coeff == -1:
+        pieces.append("-" + label)
+      else:
+        pieces.append("({})*{}".format(simplify(coeff), label))
+    if not pieces:
+      return "0"
+    return " + ".join(pieces).replace("+ -", "- ")
+
+  def _all_projected_coefficient_row_tuples(
+      self, irrep, irrep_matrices=None, use_generators=True
+  ):
+    row1_rows = self.getLinearlyIndependentProjectedCoefficientRows(
+        irrep, row=1, irrep_matrices=irrep_matrices, use_generators=use_generators
+    )
+    d_lambda = int(self.little_group.getCharacter(irrep, E))
+    out = []
+    for m_idx, r1 in enumerate(row1_rows):
+      out.append((1, list(r1), m_idx))
+    for mu in range(2, d_lambda + 1):
+      for m_idx, r1 in enumerate(row1_rows):
+        pr = self.getPartnerRowCoefficientRows(
+            irrep,
+            source_rows=[r1],
+            target_row=mu,
+            source_row=1,
+            irrep_matrices=irrep_matrices,
+            use_generators=use_generators,
+        )
+        out.append((mu, list(pr[0]), m_idx))
+    return out
+
+  def print_projected_operators_raw(
+      self, irreps, irrep_matrices, operator_labels=None, use_generators=True
+  ):
+    labels = operator_labels if operator_labels is not None else {}
+    for irrep in irreps:
+      print("")
+      print("{}".format(irrep))
+      rows = self._all_projected_coefficient_row_tuples(
+          irrep, irrep_matrices=irrep_matrices, use_generators=use_generators
+      )
+      w = max(
+          len("Combination"),
+          max(
+              (
+                  len(self._format_projected_coefficient_row_raw(coeffs, labels))
+                  for _, coeffs, _ in rows
+              ),
+              default=0,
+          ),
+      )
+      header = "Row".rjust(4) + "  " + "Mult".rjust(4) + "  " + "Combination".ljust(w)
+      print(header)
+      print("-" * len(header))
+      for row_mu, coeffs, m_idx in rows:
+        line = self._format_projected_coefficient_row_raw(coeffs, labels)
+        print(str(row_mu).rjust(4) + "  " + str(m_idx + 1).rjust(4) + "  " + line.ljust(w))
 
 
 class OperatorBasis:
