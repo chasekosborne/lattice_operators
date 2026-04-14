@@ -52,5 +52,5 @@ pprint(P_G1g_row1)
 print("P_Hg_row1:")
 pprint(P_Hg_row1)
 
-print("Projected operators (gcd-normalized Delta basis):")
+print("Projected operators:")
 op_rep.print_projected_operators_raw(("G1g", "G1u", "Hg", "Hu"), irrep_accessor, operator_labels=op_labels)

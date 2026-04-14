@@ -770,7 +770,15 @@ _CHARACTERS = {
     ("C3v", "F2",  C3v_3): -1j,
     ("C3v", "G",   C3v_1): 2,
     ("C3v", "G",   C3v_2): 1,
-    ("C3v", "G",   C3v_3): 0
+    ("C3v", "G",   C3v_3): 0,
+    ("CS",  "F1",  Cs012_1): 1,
+    ("CS",  "F1",  Cs012_2): 1j,
+    ("CS",  "F2",  Cs012_1): 1,
+    ("CS",  "F2",  Cs012_2): -1j,
+    ("CS",  "F1",  Cs112_1): 1,
+    ("CS",  "F1",  Cs112_2): 1j,
+    ("CS",  "F2",  Cs112_1): 1,
+    ("CS",  "F2",  Cs112_2): -1j
 }
 
 class LittleGroup:
@@ -1071,6 +1079,55 @@ def _extract_irrep_from_rep(full_rep, irrep, little_group):
   return irrep_rep
 
 
+def _build_rep_from_generators(seed_rep, elements=None):
+  """Build representation values from `_GENERATORS` recipes and seed matrices."""
+  if not seed_rep:
+    raise ValueError("seed_rep must contain at least one generator matrix")
+
+  rep = dict()
+  any_seed = next(iter(seed_rep.values()))
+  dim = any_seed.rows
+  target_elements = _POINT_GROUP if elements is None else elements
+
+  def _for(rotation):
+    if rotation in rep:
+      return rep[rotation]
+
+    if rotation in seed_rep:
+      rep[rotation] = Matrix(seed_rep[rotation])
+      return rep[rotation]
+
+    recipe = _GENERATORS[rotation]
+    if recipe == "invert":
+      rep[rotation] = Matrix(_for(rotation.inverse()).inv())
+      return rep[rotation]
+
+    if recipe == []:
+      if rotation == E:
+        rep[rotation] = eye(dim)
+        return rep[rotation]
+      raise ValueError("Missing seed matrix for '{}' generator".format(rotation))
+
+    mat = eye(dim)
+    for gen in recipe:
+      mat = mat * _for(gen)
+    rep[rotation] = Matrix(mat)
+    return rep[rotation]
+
+  for R in target_elements:
+    _for(R)
+
+  return rep
+
+
+def _irrep_multiplicity(full_rep, irrep, little_group):
+  mult = 0
+  g_order = little_group.order
+  for R in little_group.elements:
+    mult += little_group.getCharacter(irrep, R).conjugate() * full_rep[R].trace()
+  return simplify(mult / g_order)
+
+
 def conjugate_spin_irrep_accessor(accessor, U, conjugated_irreps=("Hg", "Hu")):
   """Return ``(irrep, R) -> Matrix`` with a fixed change of basis on spin-3/2 irreps.
 
@@ -1185,7 +1242,7 @@ def get_spinor_irrep_matrices(include_odd_parity=False):
       return {
           k: v
           for k, v in _FERMIONIC_SPINOR_IRREP_MATRICES_GU.items()
-          if k[1] in _FERMIONIC_SPINOR_G_LABELS
+          if k[1] not in _FERMIONIC_SPINOR_U_LABELS
       }
     if _FERMIONIC_SPINOR_IRREP_MATRICES_G is not None:
       return _FERMIONIC_SPINOR_IRREP_MATRICES_G
@@ -1193,77 +1250,70 @@ def get_spinor_irrep_matrices(include_odd_parity=False):
   if include_odd_parity:
     if _FERMIONIC_SPINOR_IRREP_MATRICES_GU is not None:
       return _FERMIONIC_SPINOR_IRREP_MATRICES_GU
-    if _FERMIONIC_SPINOR_IRREP_MATRICES_G is not None:
-      spinor_representation.gammaRep = GammaRep.DIRAC_PAULI
-      lg_ohd = LittleGroup(False, P0)
-      g1u = dict()
-      for R in _POINT_GROUP:
-        S_R = spinor_representation.rotation(R, False)
-        g1u[R] = Matrix(S_R[2:, 2:])
-      if _LAZY_H_PROPER is None:
-        _LAZY_H_PROPER = _wigner_j_representation(S(3) / 2)
-      hu = _extend_with_parity(_LAZY_H_PROPER, parity_sign=-1)
-      if _LAZY_J52_PROPER is None:
-        _LAZY_J52_PROPER = _wigner_j_representation(S(5) / 2)
-      j52u = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=-1)
-      if _LAZY_G2U_DICT is None:
-        _LAZY_G2U_DICT = _extract_irrep_from_rep(j52u, "G2u", lg_ohd)
-      g2u = _LAZY_G2U_DICT
-      _FERMIONIC_SPINOR_IRREP_MATRICES_GU = {
-          **_FERMIONIC_SPINOR_IRREP_MATRICES_G,
-          ("Oh", "G1u"): g1u,
-          ("Oh", "G2u"): g2u,
-          ("Oh", "Hu"): hu,
-      }
-      return _FERMIONIC_SPINOR_IRREP_MATRICES_GU
 
   spinor_representation.gammaRep = GammaRep.DIRAC_PAULI
 
-  # Little group at rest for fermionic irreps
-  lg_ohd = LittleGroup(False, P0)
-
-  # G1: use the spinor representation blocks in Dirac-Pauli basis
-  g1g = dict()
-  g1u = dict() if include_odd_parity else None
+  # Build parent representations directly; use generator multiplication on the
+  # extracted irreps (not on parent Wigner reps).
+  j12g = dict()
+  j12u = dict()
   for R in _POINT_GROUP:
     S_R = spinor_representation.rotation(R, False)
-    g1g[R] = Matrix(S_R[:2, :2])
-    if include_odd_parity:
-      g1u[R] = Matrix(S_R[2:, 2:])
+    j12g[R] = Matrix(S_R[:2, :2])
+    j12u[R] = Matrix(S_R[2:, 2:])
 
-  # H: spin-3/2 representation of proper cubic rotations, extended with parity
   if _LAZY_H_PROPER is None:
     _LAZY_H_PROPER = _wigner_j_representation(S(3) / 2)
-  h_proper = _LAZY_H_PROPER
-  hg = _extend_with_parity(h_proper, parity_sign=1)
+  j32g = _extend_with_parity(_LAZY_H_PROPER, parity_sign=1)
+  j32u = _extend_with_parity(_LAZY_H_PROPER, parity_sign=-1)
 
-  # G2: extract from spin-5/2 reducible representation (G2 + H)
   if _LAZY_J52_PROPER is None:
     _LAZY_J52_PROPER = _wigner_j_representation(S(5) / 2)
-  j52_proper = _LAZY_J52_PROPER
-  j52g = _extend_with_parity(j52_proper, parity_sign=1)
-  if _LAZY_G2G_DICT is None:
-    _LAZY_G2G_DICT = _extract_irrep_from_rep(j52g, "G2g", lg_ohd)
-  g2g = _LAZY_G2G_DICT
+  j52g = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=1)
+  j52u = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=-1)
 
+  parent_reps = (j12g, j32g, j52g, j12u, j32u, j52u)
+
+  all_irreps = dict()
+  for momentum, irreps in _FERMIONIC_LITTLE_GROUP_IRREPS.items():
+    lg = LittleGroup(False, momentum)
+    lg_name = lg.little_group
+
+    for irrep in irreps:
+      if irrep in _FERMIONIC_SPINOR_U_LABELS and not include_odd_parity:
+        continue
+
+      extracted = None
+      for rep in parent_reps:
+        d_irrep = lg.getCharacter(irrep, E)
+        if rep[next(iter(lg.elements))].rows < d_irrep:
+          continue
+        mult = _irrep_multiplicity(rep, irrep, lg)
+        if mult != 0:
+          extracted = _extract_irrep_from_rep(rep, irrep, lg)
+          if lg_name == "Oh":
+            seed = {
+                R: extracted[R]
+                for R in lg.elements
+                if _GENERATORS[R] == []
+            }
+            extracted = _build_rep_from_generators(seed, elements=lg.elements)
+          break
+
+      if extracted is None:
+        raise ValueError(
+            "Could not locate parent spin-j representation containing '{}' for '{}'".format(
+                irrep, lg_name
+            )
+        )
+
+      all_irreps[(lg_name, irrep)] = extracted
+
+  _FERMIONIC_SPINOR_IRREP_MATRICES_GU = all_irreps
   _FERMIONIC_SPINOR_IRREP_MATRICES_G = {
-      ("Oh", "G1g"): g1g,
-      ("Oh", "G2g"): g2g,
-      ("Oh", "Hg"): hg,
+      k: v for k, v in all_irreps.items() if k[1] not in _FERMIONIC_SPINOR_U_LABELS
   }
 
   if include_odd_parity:
-    hu = _extend_with_parity(h_proper, parity_sign=-1)
-    j52u = _extend_with_parity(j52_proper, parity_sign=-1)
-    if _LAZY_G2U_DICT is None:
-      _LAZY_G2U_DICT = _extract_irrep_from_rep(j52u, "G2u", lg_ohd)
-    g2u = _LAZY_G2U_DICT
-    _FERMIONIC_SPINOR_IRREP_MATRICES_GU = {
-        **_FERMIONIC_SPINOR_IRREP_MATRICES_G,
-        ("Oh", "G1u"): g1u,
-        ("Oh", "G2u"): g2u,
-        ("Oh", "Hu"): hu,
-    }
     return _FERMIONIC_SPINOR_IRREP_MATRICES_GU
-
   return _FERMIONIC_SPINOR_IRREP_MATRICES_G

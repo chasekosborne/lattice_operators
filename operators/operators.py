@@ -4,7 +4,7 @@ from collections import OrderedDict
 from collections import defaultdict
 
 from sympy import zeros, Expr, Idx, get_indices, Array, conjugate, Matrix, Transpose, IndexedBase, trace, Indexed, im
-from sympy import eye, Integer, S
+from sympy import eye, Integer, S, sqrt
 from sympy import simplify
 from sympy import gcd, cancel, sign
 from sympy import Add
@@ -84,6 +84,7 @@ class OperatorRepresentation:
 
     self._rep_matrices = dict()
     self._characters = dict()
+    self._inner_product_matrices = dict()
 
   @property
   def momentum(self):
@@ -171,6 +172,25 @@ class OperatorRepresentation:
       return self._rep_matrices[lg_element]
 
     return self._rep_matrices[lg_element]
+
+  def getModifiedInnerProductMatrix(self, use_generators=True):
+    """Return M = (1/|G|) * sum_R W(R)^† W(R).
+
+    This is the hermitian metric used to define the modified inner product
+    when the representation W is not unitary in the chosen basis.
+    """
+    if use_generators in self._inner_product_matrices:
+      return self._inner_product_matrices[use_generators]
+
+    g = S(self.little_group.order)
+    M = zeros(self.dimension)
+    for R in self.little_group.elements:
+      W_R = self.getRepresentationMatrix(R, use_generators=use_generators)
+      M += W_R.H * W_R
+
+    M = (M / g).applyfunc(simplify)
+    self._inner_product_matrices[use_generators] = M
+    return M
 
   def _compute_rep_matrix(self, lg_element):
     if lg_element == E:
@@ -378,49 +398,30 @@ class OperatorRepresentation:
     return Operator(op_sum, self.momentum)
 
   def getLinearlyIndependentProjectedOperators(
-      self, irrep, row=1, irrep_matrices=None, use_generators=True
+      self,
+      irrep,
+      row=1,
+      irrep_matrices=None,
+      use_generators=True,
   ):
     # returns a list of linearly independent operators from one projection row
-    P = self.getProjectionMatrix(
-        irrep, row=row, irrep_matrices=irrep_matrices, use_generators=use_generators
+    selected_rows = self.getLinearlyIndependentProjectedCoefficientRows(
+        irrep,
+        row=row,
+        irrep_matrices=irrep_matrices,
+        use_generators=use_generators,
     )
-    r = int(P.rank())
-    if r == 0:
-      return []
-
-    # candidate rows with bookkeeping for "simplicity" ordering.
-    row_data = []
-    for i in range(P.rows):
-      row_vec = P.row(i)
-      entries = [simplify(x) for x in row_vec]
-      nnz = sum(1 for x in entries if x != 0)
-      if nnz == 0:
-        continue
-      real_only = all(simplify(im(x)) == 0 for x in entries)
-      row_data.append((not real_only, nnz, i, Matrix([entries])))
-
-    row_data.sort(key=lambda item: (item[0], item[1], item[2]))
-
-    selected_rows = []
-    selected_indices = []
-    current_rank = 0
-    for _, _, idx, row_mat in row_data:
-      trial = selected_rows + [row_mat]
-      trial_rank = Matrix.vstack(*trial).rank()
-      if trial_rank > current_rank:
-        selected_rows.append(row_mat)
-        selected_indices.append(idx)
-        current_rank = trial_rank
-      if current_rank >= r:
-        break
-
     projected_ops = []
     for row_mat in selected_rows:
       projected_ops.append(self._projected_operator_from_coeffs(list(row_mat)))
     return projected_ops
 
   def getLinearlyIndependentProjectedCoefficientRows(
-      self, irrep, row=1, irrep_matrices=None, use_generators=True
+      self,
+      irrep,
+      row=1,
+      irrep_matrices=None,
+      use_generators=True,
   ):
     P = self.getProjectionMatrix(
         irrep, row=row, irrep_matrices=irrep_matrices, use_generators=use_generators
@@ -429,6 +430,8 @@ class OperatorRepresentation:
     if r == 0:
       return []
 
+    # Collect individual nonzero rows of P.
+    nonzero_rows = []
     row_data = []
     for i in range(P.rows):
       row_vec = P.row(i)
@@ -437,12 +440,42 @@ class OperatorRepresentation:
       if nnz == 0:
         continue
       real_only = all(simplify(im(x)) == 0 for x in entries)
-      row_data.append((not real_only, nnz, i, Matrix([entries])))
-    row_data.sort(key=lambda item: (item[0], item[1], item[2]))
+      mat = Matrix([entries])
+      nonzero_rows.append((i, nnz, mat))
+      row_data.append((not real_only, nnz, i, mat))
+
+    # Augment with pairwise differences when the difference is strictly
+    # simpler (fewer nonzero entries) than either source row.  This exposes
+    # cleaner linear combinations (e.g. Ni - Nj from centroid rows like
+    # (2Ni - Nj - Nk)/3) without disturbing irreps whose P rows are already
+    # in their simplest form.  Sort key uses gap = j - i so adjacent-row
+    # differences are preferred over longer-range ones at the same nnz.
+    diff_data = []
+    for idx1, (i, nnz_i, row_i) in enumerate(nonzero_rows):
+      for idx2, (j, nnz_j, row_j) in enumerate(nonzero_rows[idx1 + 1:], idx1 + 1):
+        min_nnz = min(nnz_i, nnz_j)
+        diff = (row_i - row_j).applyfunc(simplify)
+        entries = list(diff)
+        nnz_diff = sum(1 for x in entries if x != 0)
+        if nnz_diff == 0 or nnz_diff >= min_nnz:
+          continue
+        real_only = all(simplify(im(x)) == 0 for x in entries)
+        diff_data.append((not real_only, nnz_diff, j - i, j, diff))
+
+    # Merge: prefer pairwise diffs over same-nnz plain rows so that simpler
+    # combinations are found first.  Within the same nnz, plain rows keep
+    # their original row-index ordering; diffs use (gap, j) ordering.
+    merged = []
+    for (has_cx, nnz, i, mat) in row_data:
+      merged.append((has_cx, nnz, 1, i, 0, mat))      # type=1 (plain)
+    for (has_cx, nnz, gap, j, mat) in diff_data:
+      merged.append((has_cx, nnz, 0, gap, j, mat))     # type=0 (diff, sorts first)
+    merged.sort(key=lambda item: item[:5])
+    row_data = [(item[0], item[1], item[-1]) for item in merged]
 
     selected_rows = []
     current_rank = 0
-    for _, _, _, row_mat in row_data:
+    for _, _, row_mat in row_data:
       trial = selected_rows + [row_mat]
       trial_rank = Matrix.vstack(*trial).rank()
       if trial_rank > current_rank:
@@ -503,10 +536,16 @@ class OperatorRepresentation:
     return " + ".join(pieces).replace("+ -", "- ")
 
   def _all_projected_coefficient_row_tuples(
-      self, irrep, irrep_matrices=None, use_generators=True
+      self,
+      irrep,
+      irrep_matrices=None,
+      use_generators=True,
   ):
     row1_rows = self.getLinearlyIndependentProjectedCoefficientRows(
-        irrep, row=1, irrep_matrices=irrep_matrices, use_generators=use_generators
+        irrep,
+        row=1,
+        irrep_matrices=irrep_matrices,
+        use_generators=use_generators,
     )
     d_lambda = int(self.little_group.getCharacter(irrep, E))
     out = []
@@ -526,14 +565,20 @@ class OperatorRepresentation:
     return out
 
   def print_projected_operators_raw(
-      self, irreps, irrep_matrices, operator_labels=None, use_generators=True
+      self,
+      irreps,
+      irrep_matrices,
+      operator_labels=None,
+      use_generators=True,
   ):
     labels = operator_labels if operator_labels is not None else {}
     for irrep in irreps:
       print("")
       print("{}".format(irrep))
       rows = self._all_projected_coefficient_row_tuples(
-          irrep, irrep_matrices=irrep_matrices, use_generators=use_generators
+          irrep,
+          irrep_matrices=irrep_matrices,
+          use_generators=use_generators,
       )
       w = max(
           len("Combination"),

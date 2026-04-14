@@ -112,3 +112,17 @@ def test_delta_projection_hg_row1_independent_projected_operators_match_rank():
   vecs = [Matrix(op_rep.basis.vector(op)) for op in projected_ops]
   assert Matrix.hstack(*vecs).rank() == len(projected_ops)
 
+
+def test_delta_projection_hg_row1_independent_rows_match_rank():
+  op_rep = _build_delta_representation()
+  irrep_mats = op_rep.getDiracPauliIrrepMatrices()
+
+  rows = op_rep.getLinearlyIndependentProjectedCoefficientRows(
+      "Hg", row=1, irrep_matrices=irrep_mats
+  )
+  P_hg_row1 = op_rep.getProjectionMatrix("Hg", row=1, irrep_matrices=irrep_mats)
+
+  assert len(rows) == int(P_hg_row1.rank())
+  assert len(rows) > 0
+  assert Matrix.vstack(*rows).rank() == len(rows)
+

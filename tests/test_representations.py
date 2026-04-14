@@ -35,7 +35,7 @@ def test_delta_generators_representation_matrices_match_reference():
   W_C4z = op_rep.getRepresentationMatrix(C4z, use_generators=True)
   W_Is = op_rep.getRepresentationMatrix(Is, use_generators=True)
 
-  # Basic sanity checks on shapes
+  # basic sanity checks on shapes
   dim = op_rep.dimension
   assert W_C4y.shape == (dim, dim)
   assert W_C4z.shape == (dim, dim)
@@ -50,7 +50,7 @@ def test_delta_generators_representation_matrices_match_reference():
   for val in non_zero_entries:
     assert (val.conjugate() * val).simplify() == 1
 
-  # Check that rescaling by 2*sqrt(2) produces an integer matrix.
+  # check that rescaling by 2*sqrt(2) produces an integer matrix.
   scaled_C4y = (2 * sqrt(2)) * W_C4y
   for entry in scaled_C4y:
     assert entry == int(entry)
