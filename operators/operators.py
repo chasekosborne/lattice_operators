@@ -430,7 +430,7 @@ class OperatorRepresentation:
     if r == 0:
       return []
 
-    # Collect individual nonzero rows of P.
+    # collect individual nonzero rows of P.
     nonzero_rows = []
     row_data = []
     for i in range(P.rows):
@@ -444,12 +444,7 @@ class OperatorRepresentation:
       nonzero_rows.append((i, nnz, mat))
       row_data.append((not real_only, nnz, i, mat))
 
-    # Augment with pairwise differences when the difference is strictly
-    # simpler (fewer nonzero entries) than either source row.  This exposes
-    # cleaner linear combinations (e.g. Ni - Nj from centroid rows like
-    # (2Ni - Nj - Nk)/3) without disturbing irreps whose P rows are already
-    # in their simplest form.  Sort key uses gap = j - i so adjacent-row
-    # differences are preferred over longer-range ones at the same nnz.
+    # compare pairwise differences for simple linear combinations
     diff_data = []
     for idx1, (i, nnz_i, row_i) in enumerate(nonzero_rows):
       for idx2, (j, nnz_j, row_j) in enumerate(nonzero_rows[idx1 + 1:], idx1 + 1):
@@ -462,9 +457,6 @@ class OperatorRepresentation:
         real_only = all(simplify(im(x)) == 0 for x in entries)
         diff_data.append((not real_only, nnz_diff, j - i, j, diff))
 
-    # Merge: prefer pairwise diffs over same-nnz plain rows so that simpler
-    # combinations are found first.  Within the same nnz, plain rows keep
-    # their original row-index ordering; diffs use (gap, j) ordering.
     merged = []
     for (has_cx, nnz, i, mat) in row_data:
       merged.append((has_cx, nnz, 1, i, 0, mat))      # type=1 (plain)
