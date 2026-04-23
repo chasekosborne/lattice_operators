@@ -1,5 +1,4 @@
 from sympy import *
-from context import operators
 from operators.operators import *
 from operators.cubic_rotations import *
 
@@ -13,7 +12,6 @@ i = DiracIdx('i')
 j = DiracIdx('j')
 k = DiracIdx('k')
 
-# Table 4.6 single-site Sigma^+: alpha <= beta
 sigma_plus = Eijk(a, b, c) * u[a, i] * u[b, j] * s[c, k]
 
 sigma_basis = []

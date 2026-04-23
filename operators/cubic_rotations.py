@@ -6,7 +6,7 @@ from sortedcontainers import SortedSet
 
 from sympy.functions.elementary.miscellaneous import sqrt
 from sympy.matrices import eye, Identity, MatrixSymbol
-from sympy import pi, Array, Matrix, S
+from sympy import pi, Array, Matrix, S, simplify
 from sympy import tensorcontraction, tensorproduct
 from sympy import cos, sin, sqrt
 from sympy.physics.wigner import wigner_d

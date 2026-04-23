@@ -1,5 +1,4 @@
 from sympy import *
-from context import operators
 from operators.operators import *
 from operators.cubic_rotations import *
 

@@ -277,15 +277,42 @@ class OperatorRepresentation:
     return irrep_mats
 
   def getDiracPauliIrrepAccessor(self, include_odd_parity=False):
-    if self.little_group.little_group != "Oh":
-      raise NotImplementedError(
-          "Dirac–Pauli irrep accessor is only implemented for the Oh little group at rest."
-      )
+    lg_name = self.little_group.little_group
+
+    if lg_name == "Oh":
+      def accessor(irrep, element):
+        if irrep not in self.little_group.irreps:
+          raise KeyError("irrep '{}' is not in this little group".format(irrep))
+        return get_spinor_irrep_matrix(
+            irrep, element, include_odd_parity=include_odd_parity
+        )
+
+      return accessor
+
+    # Moving-frame little groups (C4v^D, C2v^D, C3v^D, C_S^D) do not have a
+    # per-call on-demand builder, so fall back to the pre-tabulated matrices
+    # keyed by (little_group, irrep). The caller receives the same
+    # `(irrep, element) -> Matrix` interface as in the at-rest case.
+    irrep_mats = self.getDiracPauliIrrepMatrices(
+        include_odd_parity=include_odd_parity
+    )
 
     def accessor(irrep, element):
       if irrep not in self.little_group.irreps:
         raise KeyError("irrep '{}' is not in this little group".format(irrep))
-      return get_spinor_irrep_matrix(irrep, element, include_odd_parity=include_odd_parity)
+      if irrep not in irrep_mats:
+        raise KeyError(
+            "No tabulated Dirac-Pauli matrices for irrep '{}' in little group '{}'".format(
+                irrep, lg_name
+            )
+        )
+      if element not in irrep_mats[irrep]:
+        raise KeyError(
+            "Element '{}' is not tabulated for irrep '{}' in little group '{}'".format(
+                element, irrep, lg_name
+            )
+        )
+      return irrep_mats[irrep][element]
 
     return accessor
 
@@ -346,7 +373,7 @@ class OperatorRepresentation:
           irrep, R, target_idx, source_idx, irrep_matrices=irrep_matrices
       )
       W_R = self.getRepresentationMatrix(R, use_generators)
-      # Conventions here are aligned with getProjectionMatrix, which uses
+      # conventions here are aligned with getProjectionMatrix, which uses
       # conjugated irrep matrix elements together with W(R)^T.
       P += conjugate(gamma_ts) * W_R.T
 
