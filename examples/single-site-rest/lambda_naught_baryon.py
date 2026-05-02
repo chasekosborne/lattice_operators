@@ -1,5 +1,4 @@
 from sympy import *
-from context import operators
 from operators.operators import *
 from operators.cubic_rotations import *
 
@@ -14,7 +13,6 @@ i = DiracIdx('i')
 j = DiracIdx('j')
 k = DiracIdx('k')
 
-# Table 4.8 single-site Lambda^0: alpha < beta
 lambda_naught = Eijk(a, b, c) * (u[a, i] * d[b, j] * s[c, k] - d[a, i] * u[b, j] * s[c, k])
 
 lambda_basis = []
