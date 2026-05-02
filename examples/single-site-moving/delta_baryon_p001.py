@@ -27,17 +27,15 @@ for i_int in range(4):
 
 op_rep = OperatorRepresentation(*ops)
 
-USE_GENERATORS = False
-
-op_rep.littleGroupContents(True, False)
+op_rep.littleGroupContents(True)
 
 irrep_accessor = op_rep.getDiracPauliIrrepAccessor(include_odd_parity=True)
 
 P_G1_row1 = op_rep.getProjectionMatrix(
-    "G1", row=1, irrep_matrices=irrep_accessor, use_generators=USE_GENERATORS
+    "G1", row=1, irrep_matrices=irrep_accessor
 )
 P_G2_row1 = op_rep.getProjectionMatrix(
-    "G2", row=1, irrep_matrices=irrep_accessor, use_generators=USE_GENERATORS
+    "G2", row=1, irrep_matrices=irrep_accessor
 )
 
 print("\nP_G1_row1:")
@@ -51,5 +49,4 @@ op_rep.print_projected_operators_raw(
     ("G1", "G2"),
     irrep_accessor,
     operator_labels=op_labels,
-    use_generators=USE_GENERATORS,
 )

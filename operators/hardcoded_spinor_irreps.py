@@ -1,16 +1,4 @@
-"""Auto-generated hardcoded spinor irrep matrices.
-
-Built by scripts/build_hardcoded_spinor_irreps_from_cubic.py using
-operators.cubic_rotations.iter_spinor_irrep_matrix_blocks (Oh via
-get_spinor_irrep_matrix; other little groups via spin-j extraction).
-Do not hand-edit unless you know what you are doing.
-
-Rotation keys are condensed symbols (E, C2x, …, I_C4zi) matching
-operators.cubic_rotations._POINT_GROUP_NAME_TO_ROTATION; legacy repr() keys are
-still accepted on load.
-"""
-
-from sympy import *  # noqa: F401,F403
+from sympy import * 
 
 HARD_CODED_SPINOR_IRREP_STR_MATRICES = {
     ('C2v', 'G'): {

@@ -27,20 +27,16 @@ for i_int in range(4):
 
 op_rep = OperatorRepresentation(*ops)
 
-USE_GENERATORS = False
-
 irrep_accessor = op_rep.getDiracPauliIrrepAccessor(include_odd_parity=True)
 
-# C3v^D has two 1-dimensional spinor irreps (F1, F2) and one 2-dimensional
-# spinor irrep (G).
 P_F1_row1 = op_rep.getProjectionMatrix(
-    "F1", row=1, irrep_matrices=irrep_accessor, use_generators=USE_GENERATORS
+    "F1", row=1, irrep_matrices=irrep_accessor
 )
 P_F2_row1 = op_rep.getProjectionMatrix(
-    "F2", row=1, irrep_matrices=irrep_accessor, use_generators=USE_GENERATORS
+    "F2", row=1, irrep_matrices=irrep_accessor
 )
 P_G_row1 = op_rep.getProjectionMatrix(
-    "G", row=1, irrep_matrices=irrep_accessor, use_generators=USE_GENERATORS
+    "G", row=1, irrep_matrices=irrep_accessor
 )
 
 print("\nP_F1_row1:")
@@ -57,5 +53,4 @@ op_rep.print_projected_operators_raw(
     ("F1", "F2", "G"),
     irrep_accessor,
     operator_labels=op_labels,
-    use_generators=USE_GENERATORS,
 )

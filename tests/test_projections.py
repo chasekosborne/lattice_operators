@@ -65,10 +65,10 @@ def test_delta_projection_g1g_row1_is_projector():
 
 def test_delta_projection_hg_rows_are_projectors_and_orthogonal():
   op_rep = _build_delta_representation()
-  irrep_mats = op_rep.getDiracPauliIrrepMatrices()
+  irrep_accessor = op_rep.getDiracPauliIrrepAccessor()
 
   hg_rows = [
-      op_rep.getProjectionMatrix("Hg", row=row, irrep_matrices=irrep_mats)
+      op_rep.getProjectionMatrix("Hg", row=row, irrep_matrices=irrep_accessor)
       for row in range(1, 5)
   ]
 
@@ -86,11 +86,11 @@ def test_delta_projection_hg_rows_are_projectors_and_orthogonal():
 
 def test_delta_projection_hg_row_sum_matches_character_projector():
   op_rep = _build_delta_representation()
-  irrep_mats = op_rep.getDiracPauliIrrepMatrices()
+  irrep_accessor = op_rep.getDiracPauliIrrepAccessor()
 
   P_hg_rowsum = Matrix.zeros(op_rep.dimension)
   for row in range(1, 5):
-    P_hg_rowsum += op_rep.getProjectionMatrix("Hg", row=row, irrep_matrices=irrep_mats)
+    P_hg_rowsum += op_rep.getProjectionMatrix("Hg", row=row, irrep_matrices=irrep_accessor)
 
   P_hg_char = _character_projector(op_rep, "Hg")
   assert _matrix_equal(simplify(P_hg_rowsum), simplify(P_hg_char))
@@ -98,12 +98,12 @@ def test_delta_projection_hg_row_sum_matches_character_projector():
 
 def test_delta_projection_hg_row1_independent_projected_operators_match_rank():
   op_rep = _build_delta_representation()
-  irrep_mats = op_rep.getDiracPauliIrrepMatrices()
+  irrep_accessor = op_rep.getDiracPauliIrrepAccessor()
 
   projected_ops = op_rep.getLinearlyIndependentProjectedOperators(
-      "Hg", row=1, irrep_matrices=irrep_mats
+      "Hg", row=1, irrep_matrices=irrep_accessor
   )
-  P_hg_row1 = op_rep.getProjectionMatrix("Hg", row=1, irrep_matrices=irrep_mats)
+  P_hg_row1 = op_rep.getProjectionMatrix("Hg", row=1, irrep_matrices=irrep_accessor)
 
   assert len(projected_ops) == int(P_hg_row1.rank())
   assert len(projected_ops) > 0
@@ -115,12 +115,12 @@ def test_delta_projection_hg_row1_independent_projected_operators_match_rank():
 
 def test_delta_projection_hg_row1_independent_rows_match_rank():
   op_rep = _build_delta_representation()
-  irrep_mats = op_rep.getDiracPauliIrrepMatrices()
+  irrep_accessor = op_rep.getDiracPauliIrrepAccessor()
 
   rows = op_rep.getLinearlyIndependentProjectedCoefficientRows(
-      "Hg", row=1, irrep_matrices=irrep_mats
+      "Hg", row=1, irrep_matrices=irrep_accessor
   )
-  P_hg_row1 = op_rep.getProjectionMatrix("Hg", row=1, irrep_matrices=irrep_mats)
+  P_hg_row1 = op_rep.getProjectionMatrix("Hg", row=1, irrep_matrices=irrep_accessor)
 
   assert len(rows) == int(P_hg_row1.rank())
   assert len(rows) > 0

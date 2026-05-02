@@ -1075,15 +1075,15 @@ class SpinorRepresentation:
 spinor_representation = SpinorRepresentation()
 
 
-# Cached Dirac–Pauli spinor irrep matrices for O_h^D at rest. Even-parity (g) and
-# full (g+u) are cached separately so callers can avoid building u irreps by default.
+# cached Dirac–Pauli spinor irrep matrices for O_h^D at rest
+# legacy code, hoping to remove this in later changes
 _FERMIONIC_SPINOR_IRREP_MATRICES_G = None
 _FERMIONIC_SPINOR_IRREP_MATRICES_GU = None
 
 _FERMIONIC_SPINOR_G_LABELS = frozenset(("G1g", "G2g", "Hg"))
 _FERMIONIC_SPINOR_U_LABELS = frozenset(("G1u", "G2u", "Hu"))
 
-# Populated on first lazy access (or filled when building the bulk spinor tables).
+# populated on first lazy access (or filled when building the bulk spinor tables).
 _LAZY_H_PROPER = None
 _LAZY_J52_PROPER = None
 _LAZY_G2G_DICT = None
@@ -1287,7 +1287,7 @@ def conjugate_spin_irrep_accessor(accessor, U, conjugated_irreps=("Hg", "Hu")):
   return wrapped
 
 
-def get_spinor_irrep_matrix(irrep, rotation, include_odd_parity=False):
+def get_spinor_irrep_matrix(irrep, rotation, include_odd_parity=False, generate_if_missing=False):
   """Dirac–Pauli spinor matrix for one Oh irrep and rotation (at rest).
 
   Uses ``hardcoded_spinor_irreps`` when that file defines ``('Oh', irrep)``,
@@ -1325,6 +1325,14 @@ def get_spinor_irrep_matrix(irrep, rotation, include_odd_parity=False):
   hit = _from_bulk()
   if hit is not None:
     return hit
+
+  if not generate_if_missing:
+    raise KeyError(
+        "No hardcoded Dirac-Pauli matrix for irrep '{}' and rotation '{}'. "
+        "Pass generate_if_missing=True to enable on-demand generation.".format(
+            irrep, rotation
+        )
+    )
 
   spinor_representation.gammaRep = GammaRep.DIRAC_PAULI
 
@@ -1365,20 +1373,63 @@ def get_spinor_irrep_matrix(irrep, rotation, include_odd_parity=False):
   raise ValueError("Unknown fermionic spinor irrep '{}'".format(irrep))
 
 
+def get_little_group_spinor_irrep_matrix(
+    little_group, irrep, rotation, include_odd_parity=False, generate_if_missing=False
+):
+  if irrep in _FERMIONIC_SPINOR_U_LABELS and not include_odd_parity:
+    raise ValueError(
+        "Odd-parity irrep '{}' requires include_odd_parity=True".format(irrep)
+    )
+
+  key = (little_group, irrep)
+  hardcoded = _hardcoded_spinor_irreps_filtered(include_odd_parity)
+  if key in hardcoded:
+    mats = hardcoded[key]
+    if rotation not in mats:
+      raise KeyError(
+          "Rotation '{}' is not tabulated for irrep '{}' in little group '{}'".format(
+              rotation, irrep, little_group
+          )
+      )
+    return mats[rotation]
+
+  if little_group == "Oh":
+    return get_spinor_irrep_matrix(
+        irrep,
+        rotation,
+        include_odd_parity=include_odd_parity,
+        generate_if_missing=generate_if_missing,
+    )
+
+  if not generate_if_missing:
+    raise KeyError(
+        "No hardcoded Dirac-Pauli table for irrep '{}' in little group '{}'. "
+        "Pass generate_if_missing=True to enable on-demand extraction.".format(
+            irrep, little_group
+        )
+    )
+
+  for (lg_name, ir_label), extracted, _momentum in iter_spinor_irrep_matrix_blocks(
+      include_odd_parity=include_odd_parity,
+      skip_keys=frozenset(hardcoded.keys()),
+  ):
+    if lg_name == little_group and ir_label == irrep:
+      if rotation not in extracted:
+        raise KeyError(
+            "Rotation '{}' is not available for irrep '{}' in little group '{}'".format(
+                rotation, irrep, little_group
+            )
+        )
+      return extracted[rotation]
+
+  raise KeyError(
+      "No spinor irrep data available for irrep '{}' in little group '{}'".format(
+          irrep, little_group
+      )
+  )
+
+
 def iter_spinor_irrep_matrix_blocks(include_odd_parity=False, skip_keys=None):
-  """Yield ``((little_group_name, irrep_label), irrep_matrices, momentum)`` per block.
-
-  For little group **Oh** (at rest), matrices are built with
-  `get_spinor_irrep_matrix` (Dirac–Pauli / Wigner–j paths), not projector
-  extraction from parent spin–j representations. All other little groups use the
-  same parent-representation extraction pipeline as `get_spinor_irrep_matrices`.
-  Entries present in ``hardcoded_spinor_irreps`` are yielded from disk (no
-  recomputation). Keys in ``skip_keys`` are omitted entirely (caller already
-  has them).
-
-  The ``momentum`` entry is the lattice momentum passed to ``LittleGroup(False,
-  momentum)`` for that block (needed for consistency checks and disambiguation).
-  """
   global _LAZY_H_PROPER, _LAZY_J52_PROPER
 
   hc_f = _hardcoded_spinor_irreps_filtered(include_odd_parity)
@@ -1456,10 +1507,7 @@ def iter_spinor_irrep_matrix_blocks(include_odd_parity=False, skip_keys=None):
         mult = _irrep_multiplicity(rep, irrep, lg)
         if mult != 0:
           extracted = _extract_irrep_from_rep(rep, irrep, lg)
-          # Do not rebuild Oh via ``_build_rep_from_generators``: projector
-          # extraction already restricts a homomorphism to an invariant subspace.
-          # Re-applying ``_GENERATORS`` recipes on partial seeds can disagree with
-          # that gauge and break ``D(R)D(S)=D(RS)``.
+          # do not rebuild Oh via ``_build_rep_from_generators``: projector
           break
 
       if extracted is None:
@@ -1473,13 +1521,6 @@ def iter_spinor_irrep_matrix_blocks(include_odd_parity=False, skip_keys=None):
 
 
 def get_spinor_irrep_matrices(include_odd_parity=False):
-  """Return fermionic spinor irrep matrices keyed by ``(little_group, irrep)``.
-
-  Hardcoded entries from ``hardcoded_spinor_irreps`` take precedence over cached
-  or freshly extracted matrices. A partial hardcoded table is merged with the
-  in-memory cache and/or computed blocks so callers still receive every target
-  irrep for ``include_odd_parity``.
-  """
   global _FERMIONIC_SPINOR_IRREP_MATRICES_G, _FERMIONIC_SPINOR_IRREP_MATRICES_GU
   global _LAZY_H_PROPER, _LAZY_J52_PROPER, _LAZY_G2G_DICT, _LAZY_G2U_DICT
 
