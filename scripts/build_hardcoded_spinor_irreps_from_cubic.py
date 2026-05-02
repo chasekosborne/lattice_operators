@@ -61,10 +61,30 @@ def canonical_hardcoded_accumulated(accumulated: dict, cr) -> dict:
   return out
 
 
+def _serialize_matrix_rows(rows) -> str:
+  """Render nested lists of sympy exprs as a quoted-string Python literal.
+
+  Each element is serialised as ``repr(str(elem))`` — i.e. a quoted sympy
+  string such as ``'1/2 + I/2'``.  On load, ``sympify`` parses ``'1/2'``
+  symbolically as ``Rational(1, 2)``, so the round-trip is exact with no
+  floating-point contamination and the file stays human-readable.
+  """
+  return (
+      "["
+      + ", ".join(
+          "[" + ", ".join(repr(str(elem)) for elem in row) + "]" for row in rows
+      )
+      + "]"
+  )
+
+
 def rep_to_serializable(extracted: dict, cr) -> dict[str, list]:
   """Map condensed rotation symbol -> nested lists (see ``_POINT_GROUP_NAMES``)."""
   names = cr._POINT_GROUP_NAMES
-  return {names[R]: M.tolist() for R, M in extracted.items()}
+  out = {}
+  for R, M in extracted.items():
+    out[names[R]] = M.tolist()
+  return out
 
 
 def write_hardcoded_module(path: Path, accumulated: dict) -> None:
@@ -72,7 +92,8 @@ def write_hardcoded_module(path: Path, accumulated: dict) -> None:
   header = '''"""Auto-generated hardcoded spinor irrep matrices.
 
 Built by scripts/build_hardcoded_spinor_irreps_from_cubic.py using
-operators.cubic_rotations.iter_spinor_irrep_matrix_blocks.
+operators.cubic_rotations.iter_spinor_irrep_matrix_blocks (Oh via
+get_spinor_irrep_matrix; other little groups via spin-j extraction).
 Do not hand-edit unless you know what you are doing.
 
 Rotation keys are condensed symbols (E, C2x, …, I_C4zi) matching
@@ -90,7 +111,7 @@ HARD_CODED_SPINOR_IRREP_STR_MATRICES = {
     lines.append(f"    ({lg!r}, {irrep!r}): {{")
     for rot_repr in sorted(rep.keys()):
       rows = rep[rot_repr]
-      lines.append(f"        {rot_repr!r}: {rows!r},")
+      lines.append(f"        {rot_repr!r}: {_serialize_matrix_rows(rows)},")
     lines.append("    },")
   lines.append("}\n")
 
@@ -132,9 +153,9 @@ def main() -> int:
       help="Stop after N newly computed irreps (for smoke tests).",
   )
   parser.add_argument(
-      "--no-verify",
+      "--verify",
       action="store_true",
-      help="Skip post-extraction checks (characters + sampled homomorphism law).",
+      help="Run post-extraction checks (characters + sampled homomorphism law).",
   )
   parser.add_argument(
       "--verify-pairs",
@@ -177,8 +198,8 @@ def main() -> int:
       file=sys.stderr,
       flush=True,
   )
-  if args.no_verify:
-    print("Verification disabled (--no-verify).", file=sys.stderr, flush=True)
+  if not args.verify:
+    print("Verification disabled (pass --verify to enable).", file=sys.stderr, flush=True)
   else:
     print(
         "Verification: characters + identity; "
@@ -207,7 +228,7 @@ def main() -> int:
 
     verify_dt = 0.0
     verify_report = ""
-    if not args.no_verify:
+    if args.verify:
       v0 = time.perf_counter()
       lg = cr.LittleGroup(False, momentum)
       summary = verify_extracted_spinor_irrep(

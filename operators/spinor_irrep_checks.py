@@ -6,7 +6,7 @@ import itertools
 import random
 from dataclasses import dataclass
 
-from sympy import Matrix, S, eye, simplify, trace
+from sympy import Matrix, S, expand, eye, nsimplify, simplify, sympify, trace
 
 
 @dataclass
@@ -16,6 +16,35 @@ class SpinorIrrepVerification:
   little_group_order: int
   representation_dimension: int
   homomorphism_checks: int
+
+
+def _strip_inexact_float(x):
+  """Turn SymPy ``Float`` scalars into exact rationals; leave symbols alone.
+
+  Full-matrix ``nsimplify(..., rational=True)`` can rewrite ``sqrt(2)``, ``I``,
+  etc. and spuriously break homomorphism checks.
+  """
+  x = sympify(x)
+  if getattr(x, "is_Float", False):
+    return nsimplify(x, rational=True)
+  return x
+
+
+def _expr_is_algebraically_zero(e):
+  e = simplify(expand(e))
+  if e == 0 or e == S.Zero:
+    return True
+  if getattr(e, "is_zero", None) is True:
+    return True
+  return False
+
+
+def _matrix_is_zero(M):
+  return all(
+      _expr_is_algebraically_zero(M[i, j])
+      for i in range(M.rows)
+      for j in range(M.cols)
+  )
 
 
 def verify_extracted_spinor_irrep(
@@ -48,8 +77,13 @@ def verify_extracted_spinor_irrep(
   if rep_by_rotation[any_rot].cols != dim:
     raise ValueError("Representation matrices must be square")
 
-  id_mat = simplify(rep_by_rotation[identity])
-  if id_mat != eye(dim):
+  # Only strip bare Floats; do not nsimplify whole expressions (breaks exact checks).
+  rep_by_rotation = {
+      R: M.applyfunc(_strip_inexact_float) for R, M in rep_by_rotation.items()
+  }
+
+  id_mat = rep_by_rotation[identity]
+  if not _matrix_is_zero(id_mat - eye(dim)):
     raise ValueError("D(E) != I (got {})".format(id_mat))
 
   for R in elems:
@@ -85,7 +119,6 @@ def verify_extracted_spinor_irrep(
   else:
     chosen = rng.sample(pairs_idx, target)
 
-  zeros = Matrix.zeros(dim, dim)
   for i, j in chosen:
     R = elem_list[i]
     Srot = elem_list[j]
@@ -99,8 +132,7 @@ def verify_extracted_spinor_irrep(
 
     lhs = rep_by_rotation[R] * rep_by_rotation[Srot]
     rhs = rep_by_rotation[RS]
-    diff = (lhs - rhs).applyfunc(simplify)
-    if diff != zeros:
+    if not _matrix_is_zero(lhs - rhs):
       raise ValueError(
           "Homomorphism failed for {!r} * {!r} = {!r}: D(R)D(S) != D(RS)".format(
               R, Srot, RS
@@ -127,7 +159,7 @@ def matrices_from_hardcoded_strings(rep_str_dict: dict[str, list]) -> dict:
       R = repr_map[rot_key]
     else:
       raise ValueError("Unknown rotation key {!r}".format(rot_key))
-    out[R] = Matrix(rows)
+    out[R] = cr.matrix_from_hardcoded_nested(rows)
   return out
 
 

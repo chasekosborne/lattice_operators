@@ -6,7 +6,7 @@ from sortedcontainers import SortedSet
 
 from sympy.functions.elementary.miscellaneous import sqrt
 from sympy.matrices import eye, Identity, MatrixSymbol
-from sympy import pi, Array, Matrix, S, simplify
+from sympy import pi, Array, Matrix, S, I, simplify, sympify, Float, nsimplify
 from sympy import tensorcontraction, tensorproduct
 from sympy import cos, sin, sqrt
 from sympy.physics.wigner import wigner_d
@@ -487,8 +487,6 @@ class Momentum(Array):
 P = Momentum
 P0 = Momentum([0,0,0])
 
-# @ADH - add the C_S refs
-# @ADH - Is this cheating?
 _REFERENCE_ROTATIONS = {
     P([ 0, 0, 0]): E,
     P([ 0, 0, 1]): E,
@@ -517,6 +515,8 @@ _REFERENCE_ROTATIONS = {
     P([-1, 1,-1]): C2y,
     P([-1,-1, 1]): C2z,
     P([-1,-1,-1]): C2d,
+    P([0, 1, 2]): E,
+    P([1, 1, 2]): E,
 }
 
 _BOSONIC_LITTLE_GROUP_IRREPS = {
@@ -825,21 +825,21 @@ _CHARACTERS = {
     ("C3v", "E",   C3v_3): 0,
     ("C3v", "F1",  C3v_1): 1,
     ("C3v", "F1",  C3v_2): -1,
-    ("C3v", "F1",  C3v_3): 1j,
+    ("C3v", "F1",  C3v_3): I,
     ("C3v", "F2",  C3v_1): 1,
     ("C3v", "F2",  C3v_2): -1,
-    ("C3v", "F2",  C3v_3): -1j,
+    ("C3v", "F2",  C3v_3): -I,
     ("C3v", "G",   C3v_1): 2,
     ("C3v", "G",   C3v_2): 1,
     ("C3v", "G",   C3v_3): 0,
     ("CS",  "F1",  Cs012_1): 1,
-    ("CS",  "F1",  Cs012_2): 1j,
+    ("CS",  "F1",  Cs012_2): I,
     ("CS",  "F2",  Cs012_1): 1,
-    ("CS",  "F2",  Cs012_2): -1j,
+    ("CS",  "F2",  Cs012_2): -I,
     ("CS",  "F1",  Cs112_1): 1,
-    ("CS",  "F1",  Cs112_2): 1j,
+    ("CS",  "F1",  Cs112_2): I,
     ("CS",  "F2",  Cs112_1): 1,
-    ("CS",  "F2",  Cs112_2): -1j
+    ("CS",  "F2",  Cs112_2): -I
 }
 
 class LittleGroup:
@@ -1091,6 +1091,29 @@ _LAZY_G2U_DICT = None
 _HARD_CODED_SPINOR_IRREP_MATRICES = None
 
 
+def matrix_from_hardcoded_nested(rows):
+  """Turn nested lists from ``hardcoded_spinor_irreps`` into an exact sympy ``Matrix``.
+
+  Each element may be a quoted sympy string such as ``'1/2 + I/2'`` (the
+  current format, written by the build script) or a pre-evaluated sympy
+  expression (legacy format).  ``sympify`` handles both cases: when given a
+  string it parses ``/`` symbolically so ``'1/2'`` becomes ``Rational(1, 2)``
+  rather than the Python float ``0.5``.
+
+  As an additional safety net, any ``Float`` atoms that survive (e.g. from
+  hand-edited legacy entries) are converted to exact rationals via
+  ``nsimplify``.
+  """
+  def _to_exact(x):
+    x = sympify(x)
+    floats = x.atoms(Float)
+    if not floats:
+      return x
+    return x.xreplace({f: nsimplify(f, rational=True) for f in floats})
+
+  return Matrix(rows).applyfunc(_to_exact)
+
+
 def _load_hardcoded_spinor_irrep_matrices():
   """Load hardcoded spinor irrep tables, if present."""
   global _HARD_CODED_SPINOR_IRREP_MATRICES
@@ -1112,11 +1135,36 @@ def _load_hardcoded_spinor_irrep_matrices():
         rot = repr_map[rot_key]
       else:
         raise ValueError("Unknown hardcoded rotation key '{}'".format(rot_key))
-      converted[rot] = Matrix(rows)
+      converted[rot] = matrix_from_hardcoded_nested(rows)
     out[key] = converted
 
   _HARD_CODED_SPINOR_IRREP_MATRICES = out
   return _HARD_CODED_SPINOR_IRREP_MATRICES
+
+
+def _hardcoded_spinor_irreps_filtered(include_odd_parity):
+  """Hardcoded tables restricted to the fermionic parity flag (sympy matrices)."""
+  raw = _load_hardcoded_spinor_irrep_matrices()
+  if not raw:
+    return {}
+  if include_odd_parity:
+    return dict(raw)
+  return {
+      k: v for k, v in raw.items() if k[1] not in _FERMIONIC_SPINOR_U_LABELS
+  }
+
+
+def _expected_fermionic_spinor_irrep_keys(include_odd_parity):
+  """ frozenset of ``(little_group_name, irrep)`` targets for this parity choice."""
+  keys = []
+  for momentum, irreps in _FERMIONIC_LITTLE_GROUP_IRREPS.items():
+    lg = LittleGroup(False, momentum)
+    lg_name = lg.little_group
+    for irrep in irreps:
+      if irrep in _FERMIONIC_SPINOR_U_LABELS and not include_odd_parity:
+        continue
+      keys.append((lg_name, irrep))
+  return frozenset(keys)
 
 
 def _proper_part(rotation):
@@ -1153,7 +1201,7 @@ def _extract_irrep_from_rep(full_rep, irrep, little_group):
   g_order = little_group.order
   for R in little_group.elements:
     projector += little_group.getCharacter(irrep, R).conjugate() * full_rep[R]
-  projector = (d_irrep / g_order) * projector
+  projector = (S(d_irrep) / g_order) * projector
 
   basis = projector.columnspace()
   if len(basis) < d_irrep:
@@ -1170,7 +1218,11 @@ def _extract_irrep_from_rep(full_rep, irrep, little_group):
 
 
 def _build_rep_from_generators(seed_rep, elements=None):
-  """Build representation values from `_GENERATORS` recipes and seed matrices."""
+  """Build representation values from `_GENERATORS` recipes and seed matrices.
+
+  The fermionic Oh spinor tables use projector extraction only; this helper is
+  kept for ad-hoc generator-based constructions.
+  """
   if not seed_rep:
     raise ValueError("seed_rep must contain at least one generator matrix")
 
@@ -1215,7 +1267,7 @@ def _irrep_multiplicity(full_rep, irrep, little_group):
   g_order = little_group.order
   for R in little_group.elements:
     mult += little_group.getCharacter(irrep, R).conjugate() * full_rep[R].trace()
-  return simplify(mult / g_order)
+  return simplify(mult / S(g_order))
 
 
 def conjugate_spin_irrep_accessor(accessor, U, conjugated_irreps=("Hg", "Hu")):
@@ -1236,6 +1288,12 @@ def conjugate_spin_irrep_accessor(accessor, U, conjugated_irreps=("Hg", "Hu")):
 
 
 def get_spinor_irrep_matrix(irrep, rotation, include_odd_parity=False):
+  """Dirac–Pauli spinor matrix for one Oh irrep and rotation (at rest).
+
+  Uses ``hardcoded_spinor_irreps`` when that file defines ``('Oh', irrep)``,
+  otherwise cached bulk tables from ``get_spinor_irrep_matrices``, otherwise
+  direct spin-j extraction paths for individual irreps.
+  """
   global _LAZY_H_PROPER, _LAZY_J52_PROPER, _LAZY_G2G_DICT, _LAZY_G2U_DICT
 
   if rotation not in _POINT_GROUP:
@@ -1247,6 +1305,8 @@ def get_spinor_irrep_matrix(irrep, rotation, include_odd_parity=False):
     )
 
   def _from_bulk():
+    # Prefer ``operators.hardcoded_spinor_irreps`` when this Oh irrep is listed there,
+    # then in-memory bulk tables from ``get_spinor_irrep_matrices``.
     hardcoded = _load_hardcoded_spinor_irrep_matrices()
     if hardcoded:
       key = ("Oh", irrep)
@@ -1305,38 +1365,63 @@ def get_spinor_irrep_matrix(irrep, rotation, include_odd_parity=False):
   raise ValueError("Unknown fermionic spinor irrep '{}'".format(irrep))
 
 
-def iter_spinor_irrep_matrix_blocks(include_odd_parity=False):
+def iter_spinor_irrep_matrix_blocks(include_odd_parity=False, skip_keys=None):
   """Yield ``((little_group_name, irrep_label), irrep_matrices, momentum)`` per block.
 
-  Uses the same parent-representation extraction pipeline as
-  `get_spinor_irrep_matrices` (no hardcoded shortcut). Intended for long
-  offline builds that checkpoint after each irrep.
+  For little group **Oh** (at rest), matrices are built with
+  `get_spinor_irrep_matrix` (Dirac–Pauli / Wigner–j paths), not projector
+  extraction from parent spin–j representations. All other little groups use the
+  same parent-representation extraction pipeline as `get_spinor_irrep_matrices`.
+  Entries present in ``hardcoded_spinor_irreps`` are yielded from disk (no
+  recomputation). Keys in ``skip_keys`` are omitted entirely (caller already
+  has them).
 
   The ``momentum`` entry is the lattice momentum passed to ``LittleGroup(False,
   momentum)`` for that block (needed for consistency checks and disambiguation).
   """
   global _LAZY_H_PROPER, _LAZY_J52_PROPER
 
+  hc_f = _hardcoded_spinor_irreps_filtered(include_odd_parity)
+  skip_keys = frozenset(skip_keys) if skip_keys is not None else frozenset()
+
   spinor_representation.gammaRep = GammaRep.DIRAC_PAULI
 
-  j12g = dict()
-  j12u = dict()
-  for R in _POINT_GROUP:
-    S_R = spinor_representation.rotation(R, False)
-    j12g[R] = Matrix(S_R[:2, :2])
-    j12u[R] = Matrix(S_R[2:, 2:])
+  need_extract = False
+  for momentum, irreps in _FERMIONIC_LITTLE_GROUP_IRREPS.items():
+    lg = LittleGroup(False, momentum)
+    lg_name = lg.little_group
+    for irrep in irreps:
+      if irrep in _FERMIONIC_SPINOR_U_LABELS and not include_odd_parity:
+        continue
+      key = (lg_name, irrep)
+      if key in skip_keys:
+        continue
+      if key not in hc_f:
+        need_extract = True
+        break
+    if need_extract:
+      break
 
-  if _LAZY_H_PROPER is None:
-    _LAZY_H_PROPER = _wigner_j_representation(S(3) / 2)
-  j32g = _extend_with_parity(_LAZY_H_PROPER, parity_sign=1)
-  j32u = _extend_with_parity(_LAZY_H_PROPER, parity_sign=-1)
+  parent_reps = None
+  if need_extract:
+    j12g = dict()
+    j12u = dict()
+    for R in _POINT_GROUP:
+      S_R = spinor_representation.rotation(R, False)
+      j12g[R] = Matrix(S_R[:2, :2])
+      j12u[R] = Matrix(S_R[2:, 2:])
 
-  if _LAZY_J52_PROPER is None:
-    _LAZY_J52_PROPER = _wigner_j_representation(S(5) / 2)
-  j52g = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=1)
-  j52u = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=-1)
+    if _LAZY_H_PROPER is None:
+      _LAZY_H_PROPER = _wigner_j_representation(S(3) / 2)
+    j32g = _extend_with_parity(_LAZY_H_PROPER, parity_sign=1)
+    j32u = _extend_with_parity(_LAZY_H_PROPER, parity_sign=-1)
 
-  parent_reps = (j12g, j32g, j52g, j12u, j32u, j52u)
+    if _LAZY_J52_PROPER is None:
+      _LAZY_J52_PROPER = _wigner_j_representation(S(5) / 2)
+    j52g = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=1)
+    j52u = _extend_with_parity(_LAZY_J52_PROPER, parity_sign=-1)
+
+    parent_reps = (j12g, j32g, j52g, j12u, j32u, j52u)
 
   for momentum, irreps in _FERMIONIC_LITTLE_GROUP_IRREPS.items():
     lg = LittleGroup(False, momentum)
@@ -1344,6 +1429,23 @@ def iter_spinor_irrep_matrix_blocks(include_odd_parity=False):
 
     for irrep in irreps:
       if irrep in _FERMIONIC_SPINOR_U_LABELS and not include_odd_parity:
+        continue
+
+      key = (lg_name, irrep)
+      if key in skip_keys:
+        continue
+      if key in hc_f:
+        yield key, dict(hc_f[key]), momentum
+        continue
+
+      if lg_name == "Oh":
+        extracted = {
+            R: get_spinor_irrep_matrix(
+                irrep, R, include_odd_parity=include_odd_parity
+            )
+            for R in lg.elements
+        }
+        yield (lg_name, irrep), extracted, momentum
         continue
 
       extracted = None
@@ -1354,13 +1456,10 @@ def iter_spinor_irrep_matrix_blocks(include_odd_parity=False):
         mult = _irrep_multiplicity(rep, irrep, lg)
         if mult != 0:
           extracted = _extract_irrep_from_rep(rep, irrep, lg)
-          if lg_name == "Oh":
-            seed = {
-                R: extracted[R]
-                for R in lg.elements
-                if _GENERATORS[R] == []
-            }
-            extracted = _build_rep_from_generators(seed, elements=lg.elements)
+          # Do not rebuild Oh via ``_build_rep_from_generators``: projector
+          # extraction already restricts a homomorphism to an invariant subspace.
+          # Re-applying ``_GENERATORS`` recipes on partial seeds can disagree with
+          # that gauge and break ``D(R)D(S)=D(RS)``.
           break
 
       if extracted is None:
@@ -1374,42 +1473,46 @@ def iter_spinor_irrep_matrix_blocks(include_odd_parity=False):
 
 
 def get_spinor_irrep_matrices(include_odd_parity=False):
+  """Return fermionic spinor irrep matrices keyed by ``(little_group, irrep)``.
+
+  Hardcoded entries from ``hardcoded_spinor_irreps`` take precedence over cached
+  or freshly extracted matrices. A partial hardcoded table is merged with the
+  in-memory cache and/or computed blocks so callers still receive every target
+  irrep for ``include_odd_parity``.
+  """
   global _FERMIONIC_SPINOR_IRREP_MATRICES_G, _FERMIONIC_SPINOR_IRREP_MATRICES_GU
   global _LAZY_H_PROPER, _LAZY_J52_PROPER, _LAZY_G2G_DICT, _LAZY_G2U_DICT
 
-  hardcoded = _load_hardcoded_spinor_irrep_matrices()
-  if hardcoded:
-    if include_odd_parity:
-      return dict(hardcoded)
-    return {
-        k: v for k, v in hardcoded.items() if k[1] not in _FERMIONIC_SPINOR_U_LABELS
-    }
+  hc_f = _hardcoded_spinor_irreps_filtered(include_odd_parity)
+  expected = _expected_fermionic_spinor_irrep_keys(include_odd_parity)
 
-  if not include_odd_parity:
-    if _FERMIONIC_SPINOR_IRREP_MATRICES_GU is not None:
-      return {
-          k: v
-          for k, v in _FERMIONIC_SPINOR_IRREP_MATRICES_GU.items()
-          if k[1] not in _FERMIONIC_SPINOR_U_LABELS
-      }
-    if _FERMIONIC_SPINOR_IRREP_MATRICES_G is not None:
-      return _FERMIONIC_SPINOR_IRREP_MATRICES_G
+  merged = {}
+  if _FERMIONIC_SPINOR_IRREP_MATRICES_GU is not None:
+    merged.update(_FERMIONIC_SPINOR_IRREP_MATRICES_GU)
+  merged.update(hc_f)
 
-  if include_odd_parity:
-    if _FERMIONIC_SPINOR_IRREP_MATRICES_GU is not None:
-      return _FERMIONIC_SPINOR_IRREP_MATRICES_GU
+  if not expected <= frozenset(merged.keys()):
+    for key, extracted, _mom in iter_spinor_irrep_matrix_blocks(
+        include_odd_parity=include_odd_parity,
+        skip_keys=frozenset(merged.keys()),
+    ):
+      merged[key] = extracted
 
-  all_irreps = dict()
-  for key, extracted, _mom in iter_spinor_irrep_matrix_blocks(
-      include_odd_parity=include_odd_parity
-  ):
-    all_irreps[key] = extracted
+  missing = expected - frozenset(merged.keys())
+  if missing:
+    raise ValueError(
+        "Incomplete fermionic spinor irrep tabulation (missing {})".format(
+            sorted(missing)
+        )
+    )
 
-  _FERMIONIC_SPINOR_IRREP_MATRICES_GU = all_irreps
+  _FERMIONIC_SPINOR_IRREP_MATRICES_GU = merged
   _FERMIONIC_SPINOR_IRREP_MATRICES_G = {
-      k: v for k, v in all_irreps.items() if k[1] not in _FERMIONIC_SPINOR_U_LABELS
+      k: v for k, v in merged.items() if k[1] not in _FERMIONIC_SPINOR_U_LABELS
   }
 
   if include_odd_parity:
-    return _FERMIONIC_SPINOR_IRREP_MATRICES_GU
-  return _FERMIONIC_SPINOR_IRREP_MATRICES_G
+    return dict(merged)
+  return {
+      k: v for k, v in merged.items() if k[1] not in _FERMIONIC_SPINOR_U_LABELS
+  }

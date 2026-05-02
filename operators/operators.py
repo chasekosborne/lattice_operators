@@ -264,6 +264,8 @@ class OperatorRepresentation:
 
   def getDiracPauliIrrepMatrices(self, include_odd_parity=False):
     # @CKO -  This and accessor is intended only for O_h^D at rest
+    # Hardcoded spinor tables (when present) override extracted matrices; see
+    # cubic_rotations.get_spinor_irrep_matrices.
     all_mats = get_spinor_irrep_matrices(include_odd_parity=include_odd_parity)
     lg_name = self.little_group.little_group
 
