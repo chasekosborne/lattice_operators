@@ -1,15 +1,43 @@
+import os
+import sys
+
+# allow `python examples/dibaryon_tests.py` from the repo root
+_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 from sympy import Eijk
 from sympy import Array
 from sympy import sqrt
 from sympy import S
 from sympy import *
 
-from context import operators
+import operators  # noqa: F401  -- ensures the package import is wired up
 
 from operators.operators import QuarkField, DiracIdx, ColorIdx, OperatorRepresentation, Operator, OperatorBasis
 from operators.cubic_rotations import *
 from operators.tensors import Gamma
 import operators.grassmann as gr
+
+# The Cgamma_X gamma_+ structures and the helpers ``Baryon`` and
+# ``flavor_term`` below mirror the ones implemented as the supported public
+# pipeline in :mod:`operators.dibaryon`.  Existing scripts can keep using
+# the locally-defined ``Baryon``/``flavor_term`` (preserved verbatim for
+# backward compatibility), but new code should prefer
+# ``from operators.dibaryon import baryon_field, two_baryon_spin_components,
+# Dibaryon, ...``.
+from operators.dibaryon import (  # noqa: F401  -- re-exported for convenience
+    baryon_field,
+    two_baryon_spin_components,
+    isospin_combinations,
+    momentum_shell,
+    momentum_shell_pairs,
+    dibaryon_basis,
+    Dibaryon,
+    SPIN_SINGLET,
+    SPIN_TRIPLET,
+    SPIN_ALL,
+)
 
 from pprint import pprint
 
@@ -1011,5 +1039,39 @@ def Baryon(q1, q2, q3, alpha):
   return baryon
 
 
+def modern_pipeline_demo():
+  """Reproduce ``test_P0_A1p(L_L_s_I0, n=1)`` using ``operators.dibaryon``.
+
+  The legacy hand-built construction sums all six (p, -p) operators with
+  ``|p|^2 = 1`` and then verifies the result is ``A1g``.  The pipeline
+  builds the closed two-baryon basis automatically and projects.
+  """
+  u = QuarkField.create('u')
+  d = QuarkField.create('d')
+  s = QuarkField.create('s')
+
+  alpha = DiracIdx('alpha_modern')
+  lam_a = baryon_field(s, u, d, alpha)
+  lam_b = baryon_field(s, u, d, alpha)
+  ll_components = two_baryon_spin_components(lam_a, lam_b, alpha)
+
+  dib = Dibaryon(
+      spin_components=ll_components,
+      total_momentum=P0,
+      momentum_shells=[(0, 0), (1, 1)],
+      spin_indices=SPIN_SINGLET,
+      channel_label='LL_I0_S0',
+  )
+  print('Modern pipeline: H-dibaryon (LL I=0 S=0) at rest, shells (0,0)+(1,1)')
+  print('  little group decomposition: {}'.format(
+      dib.little_group_contents(nice=True, use_generators=True)
+  ))
+
+  irrep_accessor = dib.get_irrep_accessor()
+  dib.print_projected_operators(('A1g',), irrep_accessor, use_generators=True)
+
+
 if __name__ == "__main__":
   main()
+  print()
+  modern_pipeline_demo()

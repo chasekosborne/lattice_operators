@@ -34,12 +34,22 @@ irrep_accessor = op_rep.getDiracPauliIrrepAccessor(include_odd_parity=True)
 P_G1_row1 = op_rep.getProjectionMatrix(
     "G1", row=1, irrep_matrices=irrep_accessor
 )
+
+
+P_G1_row2 = op_rep.getProjectionMatrix(
+    "G1", row=2, irrep_matrices=irrep_accessor
+)
+
 P_G2_row1 = op_rep.getProjectionMatrix(
     "G2", row=1, irrep_matrices=irrep_accessor
 )
 
 print("\nP_G1_row1:")
 pprint(P_G1_row1)
+
+
+print("\nP_G1_row2:")
+pprint(P_G1_row2)
 
 print("\nP_G2_row1:")
 pprint(P_G2_row1)

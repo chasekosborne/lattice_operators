@@ -11,7 +11,6 @@ from sympy import Matrix, S, expand, eye, nsimplify, simplify, sympify, trace
 
 @dataclass
 class SpinorIrrepVerification:
-  """Returned when all checks pass."""
 
   little_group_order: int
   representation_dimension: int
@@ -19,11 +18,6 @@ class SpinorIrrepVerification:
 
 
 def _strip_inexact_float(x):
-  """Turn SymPy ``Float`` scalars into exact rationals; leave symbols alone.
-
-  Full-matrix ``nsimplify(..., rational=True)`` can rewrite ``sqrt(2)``, ``I``,
-  etc. and spuriously break homomorphism checks.
-  """
   x = sympify(x)
   if getattr(x, "is_Float", False):
     return nsimplify(x, rational=True)
@@ -55,7 +49,6 @@ def verify_extracted_spinor_irrep(
     homomorphism_sample_pairs: int = 256,
     homomorphism_rng: random.Random | None = None,
 ):
-  """Validate traces vs characters and (sampled) homomorphism law ``D(R)D(S)=D(RS)``."""
   elems = frozenset(little_group.elements)
   keys = set(rep_by_rotation.keys())
   if keys != elems:
@@ -77,7 +70,6 @@ def verify_extracted_spinor_irrep(
   if rep_by_rotation[any_rot].cols != dim:
     raise ValueError("Representation matrices must be square")
 
-  # Only strip bare Floats; do not nsimplify whole expressions (breaks exact checks).
   rep_by_rotation = {
       R: M.applyfunc(_strip_inexact_float) for R, M in rep_by_rotation.items()
   }
@@ -147,7 +139,6 @@ def verify_extracted_spinor_irrep(
 
 
 def matrices_from_hardcoded_strings(rep_str_dict: dict[str, list]) -> dict:
-  """Convert one hardcoded irrep entry (string keys) to rotation -> Matrix."""
   from operators import cubic_rotations as cr
 
   repr_map = {repr(R): R for R in cr._POINT_GROUP}
