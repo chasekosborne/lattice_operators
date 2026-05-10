@@ -13,6 +13,7 @@ from sympy import expand
 
 from .cubic_rotations import spinor_representation, LittleGroup, E
 from .cubic_rotations import get_spinor_irrep_matrix, get_little_group_spinor_irrep_matrix
+from .cubic_rotations import get_bosonic_irrep_matrix
 from .cubic_rotations import _GENERATORS as GENERATORS
 from .cubic_rotations import P0
 from .grassmann import grassmann_simplify, coefficients, GrassmannField
@@ -280,6 +281,26 @@ class OperatorRepresentation:
 
     return accessor
 
+  def getBosonicIrrepAccessor(self):
+    """Irrep-matrix accessor for bosonic operators (e.g. dibaryons)."""
+    lg_name = self.little_group.little_group
+
+    def accessor(irrep, element):
+      if irrep not in self.little_group.irreps:
+        raise KeyError("irrep '{}' is not in this little group".format(irrep))
+      return get_bosonic_irrep_matrix(lg_name, irrep, element)
+
+    return accessor
+
+  def getIrrepAccessor(self, include_odd_parity=False, generate_missing=False):
+    """Choose between bosonic and fermionic irrep accessors based on basis statistics."""
+    if self.bosonic:
+      return self.getBosonicIrrepAccessor()
+    return self.getDiracPauliIrrepAccessor(
+        include_odd_parity=include_odd_parity,
+        generate_missing=generate_missing,
+    )
+
   def getProjectionMatrix(self, irrep, row=1, irrep_matrices=None, use_generators=False):
     if irrep_matrices is None:
       raise ValueError(
@@ -536,27 +557,17 @@ class OperatorRepresentation:
       irrep_matrices=None,
       use_generators=False,
   ):
-    row1_rows = self.getLinearlyIndependentProjectedCoefficientRows(
-        irrep,
-        row=1,
-        irrep_matrices=irrep_matrices,
-        use_generators=use_generators,
-    )
     d_lambda = int(self.little_group.getCharacter(irrep, E))
     out = []
-    for m_idx, r1 in enumerate(row1_rows):
-      out.append((1, list(r1), m_idx))
-    for mu in range(2, d_lambda + 1):
-      for m_idx, r1 in enumerate(row1_rows):
-        pr = self.getPartnerRowCoefficientRows(
-            irrep,
-            source_rows=[r1],
-            target_row=mu,
-            source_row=1,
-            irrep_matrices=irrep_matrices,
-            use_generators=use_generators,
-        )
-        out.append((mu, list(pr[0]), m_idx))
+    for mu in range(1, d_lambda + 1):
+      mu_rows = self.getLinearlyIndependentProjectedCoefficientRows(
+          irrep,
+          row=mu,
+          irrep_matrices=irrep_matrices,
+          use_generators=use_generators,
+      )
+      for m_idx, r_mu in enumerate(mu_rows):
+        out.append((mu, list(r_mu), m_idx))
     return out
 
   def print_projected_operators_raw(
@@ -638,14 +649,15 @@ class OperatorBasis:
     if operator not in self._vectors:
       _vector = list()
       coeffs_dict = operator.coefficients
+      missing_terms = set(coeffs_dict.keys())
       for grassmann_vector in self.grassmann_basis:
         if grassmann_vector in coeffs_dict:
           _vector.append(coeffs_dict[grassmann_vector])
-          del coeffs_dict[grassmann_vector]
+          missing_terms.discard(grassmann_vector)
         else:
           _vector.append(0)
 
-      if coeffs_dict:
+      if missing_terms:
         raise ValueError("Basis is not complete")
 
       self._vectors[operator] = _vector
@@ -1182,7 +1194,7 @@ class OperatorMul:
 
     operators = list(self.operators)
     operators[0] = operators[0] * other
-    return OperaotrMul(*operators)
+    return OperatorMul(*operators)
 
   def __rmul__(self, other):
     operators = list(self.operators)
