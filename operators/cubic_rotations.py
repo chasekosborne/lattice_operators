@@ -16,6 +16,10 @@ try:
   from .spinor_irreps import HARD_CODED_SPINOR_IRREP_MATRICES
 except Exception:
   HARD_CODED_SPINOR_IRREP_MATRICES = {}
+try:
+  from .bosonic_irreps import HARD_CODED_BOSONIC_IRREP_MATRICES
+except Exception:
+  HARD_CODED_BOSONIC_IRREP_MATRICES = {}
 
 
 @unique
@@ -832,6 +836,14 @@ _CHARACTERS = {
     ("C3v", "G",   C3v_1): 2,
     ("C3v", "G",   C3v_2): 1,
     ("C3v", "G",   C3v_3): 0,
+    ("CS",  "A1",  Cs012_1): 1,
+    ("CS",  "A1",  Cs012_2): 1,
+    ("CS",  "A2",  Cs012_1): 1,
+    ("CS",  "A2",  Cs012_2): -1,
+    ("CS",  "A1",  Cs112_1): 1,
+    ("CS",  "A1",  Cs112_2): 1,
+    ("CS",  "A2",  Cs112_1): 1,
+    ("CS",  "A2",  Cs112_2): -1,
     ("CS",  "F1",  Cs012_1): 1,
     ("CS",  "F1",  Cs012_2): I,
     ("CS",  "F2",  Cs012_1): 1,
@@ -1089,6 +1101,7 @@ _LAZY_J52_PROPER = None
 _LAZY_G2G_DICT = None
 _LAZY_G2U_DICT = None
 _HARD_CODED_SPINOR_IRREP_MATRICES = None
+_HARD_CODED_BOSONIC_IRREP_MATRICES = None
 
 
 def matrix_from_hardcoded_nested(rows):
@@ -1138,6 +1151,33 @@ def _hardcoded_spinor_irreps_filtered(include_odd_parity):
   return {
       k: v for k, v in raw.items() if k[1] not in _FERMIONIC_SPINOR_U_LABELS
   }
+
+
+def _load_hardcoded_bosonic_irrep_matrices():
+  global _HARD_CODED_BOSONIC_IRREP_MATRICES
+  if _HARD_CODED_BOSONIC_IRREP_MATRICES is not None:
+    return _HARD_CODED_BOSONIC_IRREP_MATRICES
+
+  if not HARD_CODED_BOSONIC_IRREP_MATRICES:
+    _HARD_CODED_BOSONIC_IRREP_MATRICES = {}
+    return _HARD_CODED_BOSONIC_IRREP_MATRICES
+
+  repr_map = {repr(R): R for R in _POINT_GROUP}
+  out = dict()
+  for key, rep in HARD_CODED_BOSONIC_IRREP_MATRICES.items():
+    converted = dict()
+    for rot_key, matrix in rep.items():
+      if rot_key in _POINT_GROUP_NAME_TO_ROTATION:
+        rot = _POINT_GROUP_NAME_TO_ROTATION[rot_key]
+      elif rot_key in repr_map:
+        rot = repr_map[rot_key]
+      else:
+        raise ValueError("Unknown hardcoded rotation key '{}'".format(rot_key))
+      converted[rot] = matrix
+    out[key] = converted
+
+  _HARD_CODED_BOSONIC_IRREP_MATRICES = out
+  return _HARD_CODED_BOSONIC_IRREP_MATRICES
 
 
 def _expected_fermionic_spinor_irrep_keys(include_odd_parity):
@@ -1393,8 +1433,16 @@ def _build_bosonic_little_group_irrep(little_group, irrep):
 
 
 def get_bosonic_irrep_matrix(little_group, irrep, rotation):
-  # retruns bosinic irrep w.r.t. rotation element
+  # returns bosonic irrep matrix for one little-group element.
+  # Checks the hardcoded table first; falls back to on-demand computation.
   key = (little_group, irrep)
+
+  hardcoded = _load_hardcoded_bosonic_irrep_matrices()
+  if hardcoded and key in hardcoded:
+    mats = hardcoded[key]
+    if rotation in mats:
+      return mats[rotation]
+
   if key not in _BOSONIC_IRREP_MATRICES:
     if little_group == "Oh":
       _BOSONIC_IRREP_MATRICES[key] = _build_bosonic_oh_irrep(irrep)

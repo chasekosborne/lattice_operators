@@ -162,11 +162,14 @@ class OperatorRepresentation:
       self._rep_matrices[lg_element] = self.getRepresentationMatrix(lg_element.inverse(), True).inv()
       return self._rep_matrices[lg_element]
     elif use_generators and GENERATORS[lg_element]:
-      rep_mat = Integer(1)
-      for el in GENERATORS[lg_element]:
-        rep_mat *= self.getRepresentationMatrix(el, True)
-
-      self._rep_matrices[lg_element] = rep_mat
+      gens = GENERATORS[lg_element]
+      if all(g in self.little_group.elements for g in gens):
+        rep_mat = Integer(1)
+        for el in gens:
+          rep_mat *= self.getRepresentationMatrix(el, True)
+        self._rep_matrices[lg_element] = rep_mat
+      else:
+        self._compute_rep_matrix(lg_element)
       return self._rep_matrices[lg_element]
     else:
       self._compute_rep_matrix(lg_element)
