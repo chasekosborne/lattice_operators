@@ -262,22 +262,27 @@ class OperatorRepresentation:
     )
 
   def getDiracPauliIrrepAccessor(self, include_odd_parity=False, generate_missing=False):
-    lg_name = self.little_group.little_group
+    lg = self.little_group
+    lg_name = lg.little_group
 
     def accessor(irrep, element):
-      if irrep not in self.little_group.irreps:
+      if irrep not in lg.irreps:
         raise KeyError("irrep '{}' is not in this little group".format(irrep))
+      # Hardcoded LG tables are stored for the reference ray only (e.g. P=001
+      # for C4v).  Map each little-group element to its reference-ray conjugate
+      # before lookup so non-reference momenta (P=100, P=010, ...) work.
+      lookup = lg.reference_element(element)
       if lg_name == "Oh":
         return get_spinor_irrep_matrix(
             irrep,
-            element,
+            lookup,
             include_odd_parity=include_odd_parity,
             generate_if_missing=generate_missing,
         )
       return get_little_group_spinor_irrep_matrix(
           little_group=lg_name,
           irrep=irrep,
-          rotation=element,
+          rotation=lookup,
           include_odd_parity=include_odd_parity,
           generate_if_missing=generate_missing,
       )
@@ -286,12 +291,16 @@ class OperatorRepresentation:
 
   def getBosonicIrrepAccessor(self):
     """Irrep-matrix accessor for bosonic operators (e.g. dibaryons)."""
-    lg_name = self.little_group.little_group
+    lg = self.little_group
+    lg_name = lg.little_group
 
     def accessor(irrep, element):
-      if irrep not in self.little_group.irreps:
+      if irrep not in lg.irreps:
         raise KeyError("irrep '{}' is not in this little group".format(irrep))
-      return get_bosonic_irrep_matrix(lg_name, irrep, element)
+      # Same reference-ray remapping as the fermionic accessor: bosonic C4v/C2v
+      # tables are keyed by reference-orientation group elements only.
+      lookup = lg.reference_element(element)
+      return get_bosonic_irrep_matrix(lg_name, irrep, lookup)
 
     return accessor
 
@@ -403,7 +412,9 @@ class OperatorRepresentation:
 
     if op_sum == S.Zero:
       return Operator(S.Zero, self.momentum)
-    if isinstance(op_sum, Operator):
+    # Multi-hadron products reconstruct as OperatorMul / OperatorAdd; do not
+    # wrap those back into Operator (which expects a SymPy quark expression).
+    if isinstance(op_sum, (Operator, OperatorMul, OperatorAdd)):
       return op_sum
     return Operator(op_sum, self.momentum)
 
@@ -916,7 +927,14 @@ class Operator:
       if other.zero:
         return self
 
-      return Operator(self.operator + other.operator, self.momentum)
+      # Do not merge sympy expressions here: summing baryon fields with
+      # different concrete Dirac components (e.g. after LG projection at
+      # non-reference momenta) raises IndexConformanceException.  Keep the
+      # terms as an OperatorAdd instead.
+      return OperatorAdd(self, other)
+
+    elif isinstance(other, OperatorAdd) and self.momentum == other.momentum and self.number_of_quarks == other.number_of_quarks:
+      return OperatorAdd(self, *other.operators)
 
     elif other == S.Zero:
       return self
@@ -986,9 +1004,6 @@ class GrassmannProductBasis:
 class OperatorMul:
 
   def __init__(self, *operators):
-
-    if len(operators) > 2:
-      raise ValueError("3-particle and higher operators not currently supported")
 
     all_operators = all(isinstance(op, Operator) for op in operators)
     if not all_operators:
@@ -1061,36 +1076,45 @@ class OperatorMul:
 
   
 
-  # @ADH - ONLY WORKS ASSUMING TWO-BARYON OPERATORS
   @property
   def coefficients(self):
     if self._coefficients is None:
-      op_coeffs = list()
-      for op in self.operators:
-        op_coeffs.append(op.coefficients)
+      op_coeffs = [op.coefficients for op in self.operators]
 
       coeffs_dict = defaultdict(int)
 
-      for term in self.raw_terms:
-        if term[0] == term[1]:
+      for raw_term in self.raw_terms:
+        # Vanishes if any two sub-terms are identical (Grassmann nilpotency)
+        if len(set(raw_term)) < len(raw_term):
           continue
 
-        str_rep1 = "{}__{}".format(term[0][0].__repr__(), term[0][1].__repr__())
-        str_rep2 = "{}__{}".format(term[1][0].__repr__(), term[1][1].__repr__())
-        
-        coeff = op_coeffs[0][term[0]] * op_coeffs[1][term[1]]
+        # Product of individual coefficients
+        coeff = S.One
+        for i, t in enumerate(raw_term):
+          coeff = coeff * op_coeffs[i][t]
 
-        new_term = term
-        if str_rep1 < str_rep2:
-          coeff = -coeff
-          new_term = tuple([term[1], term[0]])
+        # Sort sub-terms into canonical (descending) order by string key and
+        # compute the sign from the permutation.  Each swap of two fermionic
+        # baryon blocks (each with an odd number of quarks) contributes -1, so
+        # the sign is simply (-1)^(number_of_inversions) = parity of the sort.
+        str_keys = [
+          "{}__{}".format(t[0].__repr__(), t[1].__repr__()) for t in raw_term
+        ]
+        order = sorted(range(len(raw_term)), key=lambda i: str_keys[i], reverse=True)
 
-        if new_term in coeffs_dict:
-          coeffs_dict[new_term] += coeff
-        else:
-          coeffs_dict[new_term] = coeff
+        # Count inversions to determine permutation parity
+        num_inversions = sum(
+          1
+          for i in range(len(order))
+          for j in range(i + 1, len(order))
+          if order[i] > order[j]
+        )
+        sign = S.NegativeOne ** num_inversions
 
-      self._coefficients = { k:v for k, v in coeffs_dict.items() if expand(v) }  # @ADH - do you think expand is best here?
+        canonical_term = tuple(raw_term[i] for i in order)
+        coeffs_dict[canonical_term] += sign * coeff
+
+      self._coefficients = {k: v for k, v in coeffs_dict.items() if expand(v)}
 
     return self._coefficients
 
