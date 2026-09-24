@@ -22,6 +22,7 @@ from context import operators  # noqa: F401
 
 from operators.cubic_rotations import (
     C2x,
+    C4x,
     C4z,
     E,
     Is,
@@ -34,11 +35,13 @@ from operators.dibaryon import (
     SPIN_SINGLET,
     SPIN_TRIPLET,
     Dibaryon,
+    IrrepProductDibaryon,
     baryon_field,
     dibaryon_basis,
     isospin_combinations,
     momentum_shell,
     momentum_shell_pairs,
+    single_baryon_irrep_ops,
     two_baryon_spin_components,
 )
 from operators.operators import DiracIdx, Operator, OperatorAdd, QuarkField
@@ -193,6 +196,22 @@ def test_h_dibaryon_a1g_projected_operators_match_manual_construction():
     assert nz_counts == [1, 3]
 
 
+def test_dibaryon_basis_labels_include_constituent_irrep_metadata():
+    comps = _build_lambda_components()
+    dib = Dibaryon(
+        spin_components=comps,
+        total_momentum=P([0, 0, 1]),
+        momentum_shells=[(0, 1)],
+        spin_indices=SPIN_SINGLET,
+        channel_label="HD_move",
+    )
+    labels = set(dib.basis_labels.values())
+    assert len(labels) == 1
+    label = next(iter(labels))
+    assert "pa(0,0,0)[n=0; O_h^D; G1g]" in label
+    assert "pb(0,0,1)[n=1; C_{4v}^D; G1]" in label
+
+
 def test_nx_antisymmetric_i0_s1_at_rest_is_t1g():
     comps = _build_nx_antisymmetric_components()
     dib = Dibaryon(
@@ -287,3 +306,123 @@ def test_isospin_combinations_rejects_mismatched_total_i3():
         pass
     else:
         raise AssertionError("expected ValueError for mismatched I_3")
+
+
+# ---------------------------------------------------------------------------
+# Irrep-product construction (bbops-style) and accessor fixes
+# ---------------------------------------------------------------------------
+
+
+def test_fermionic_irrep_accessor_works_at_non_reference_momentum():
+    """C4v G1 tables are stored for P=001; P=100 must remap via reference_element."""
+    u = QuarkField.create("u")
+    d = QuarkField.create("d")
+    s = QuarkField.create("s")
+    alpha = DiracIdx("alpha_lam")
+    lam = baryon_field(s, u, d, alpha)
+    ops = single_baryon_irrep_ops(lam, alpha, P([1, 0, 0]), "G1")
+    assert len(ops) == 2
+
+
+def test_bosonic_irrep_accessor_works_at_non_reference_momentum():
+    comps = _build_lambda_components()
+    dib = Dibaryon(
+        spin_components=comps,
+        total_momentum=P([1, 0, 0]),
+        momentum_shells=[(0, 1)],
+        spin_indices=SPIN_SINGLET,
+        channel_label="H_x",
+    )
+    acc = dib.get_irrep_accessor()
+    # Must not raise KeyError for C4x (reference-mapped to C4z in the tables).
+    mat = acc("A1", C4x)
+    assert mat == Matrix([[1]])
+
+
+def test_irrep_product_rest_g1g_matches_spin_singlet_a1g():
+    """Rest-frame G1g⊗G1g A1g equals the Dirac spin-singlet (bbops 000_G1g)."""
+    u = QuarkField.create("u")
+    d = QuarkField.create("d")
+    s = QuarkField.create("s")
+    alpha = DiracIdx("alpha_lam")
+    lam = baryon_field(s, u, d, alpha)
+
+    ip = IrrepProductDibaryon(
+        lam, lam, alpha, P0, [(0, 0)], "G1g", "G1g", channel_label="LL"
+    )
+    assert ip.little_group_contents(nice=False, use_generators=True)["A1g"] == 1
+
+    acc = ip.get_irrep_accessor()
+    projected = ip.get_projected_operators(
+        "A1g", row=1, irrep_matrices=acc, use_generators=True
+    )
+    assert len(projected) == 1
+
+    bbops_singlet = (
+        Operator(lam.subs(alpha, 0), P0) * Operator(lam.subs(alpha, 1), P0)
+        - Operator(lam.subs(alpha, 1), P0) * Operator(lam.subs(alpha, 0), P0)
+    )
+    from operators.operators import OperatorBasis
+
+    basis = OperatorBasis(bbops_singlet, projected[0])
+    v_bb = Matrix(basis.vector(bbops_singlet))
+    v_our = Matrix(basis.vector(projected[0]))
+    assert int(v_bb.row_join(v_our).rank()) == 1
+
+
+def test_irrep_product_shell_one_a1g_is_different_row_combination():
+    """G1⊗G1 at p^2=1 projects to A1g on the antisymmetric (different-row) channel.
+
+    This matches the Dirac spin-singlet construction and disagrees with the
+    same-row pattern stored under ``A1g`` in some external BB tables (those
+    operators have Is=-1 in our convention, i.e. A1u).
+    """
+    u = QuarkField.create("u")
+    d = QuarkField.create("d")
+    s = QuarkField.create("s")
+    alpha = DiracIdx("alpha_lam")
+    lam = baryon_field(s, u, d, alpha)
+
+    ip = IrrepProductDibaryon(
+        lam, lam, alpha, P0, [(1, 1)], "G1", "G1", channel_label="LL"
+    )
+    decomposition = ip.little_group_contents(nice=False, use_generators=True)
+    assert decomposition["A1g"] == 1
+
+    acc = ip.get_irrep_accessor()
+    rows = ip.projected_coefficient_rows(
+        "A1g", row=1, irrep_matrices=acc, use_generators=True
+    )
+    assert len(rows) == 1
+
+    labels = list(ip.basis_labels.values())
+    vals = [simplify(c) for c in rows[0]]
+    scale = next(c for c in vals if c != 0)
+    vals = [simplify(c / scale) for c in vals]
+
+    # Nonzero support must be different-row products only (r1⊗r2 and r2⊗r1).
+    for coeff, label in zip(vals, labels):
+        if coeff == 0:
+            continue
+        assert "_r1" in label and "_r2" in label or (
+            "r1" in label and "r2" in label
+        )
+        # Same-row labels look like ..._r1(...)__..._r1(...) or r2/r2.
+        assert not (
+            ("_r1" in label and label.count("_r1") == 2)
+            or ("_r2" in label and label.count("_r2") == 2)
+        )
+
+
+def test_operator_add_allows_mixed_dirac_components():
+    u = QuarkField.create("u")
+    d = QuarkField.create("d")
+    s = QuarkField.create("s")
+    alpha = DiracIdx("alpha_lam")
+    lam = baryon_field(s, u, d, alpha)
+    o0 = Operator(lam.subs(alpha, 0), P([1, 0, 0]))
+    o1 = Operator(lam.subs(alpha, 1), P([1, 0, 0]))
+    from operators.operators import OperatorAdd
+
+    summed = o0 + o1
+    assert isinstance(summed, OperatorAdd)
