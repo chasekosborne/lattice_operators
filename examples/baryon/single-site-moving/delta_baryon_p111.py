@@ -1,6 +1,7 @@
 from sympy import *
 from operators.operators import *
 from operators.cubic_rotations import *
+from operators.hdf5_output import write_projected_operators_h5
 
 P_ref = Momentum([1, 1, 1])
 
@@ -54,3 +55,6 @@ op_rep.print_projected_operators_raw(
     irrep_accessor,
     operator_labels=op_labels,
 )
+
+write_projected_operators_h5(op_rep, ("F1", "F2", "G"), "delta_baryon_p111_operators.h5",
+                             irrep_matrices=irrep_accessor, mode="w")

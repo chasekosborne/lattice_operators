@@ -419,6 +419,12 @@ class IrrepProductDibaryon:
             use_generators=use_generators,
         )
 
+    def write_h5(self, irreps, filename, irrep_matrices=None, mode="a", use_generators=False,
+                 **kwargs):
+        """Write the projected operators to HDF5; see ``write_projected_operators_h5``."""
+        return _write_h5(self._representation, irreps, filename, irrep_matrices,
+                         self._channel_label, mode, use_generators, **kwargs)
+
 
 def _constituent_metadata(label, momentum, shell):
     info = _spin_half_irrep_content(momentum)
@@ -590,6 +596,22 @@ class Dibaryon:
             operator_labels=self._labels,
             use_generators=use_generators,
         )
+
+    def write_h5(self, irreps, filename, irrep_matrices=None, mode="a", use_generators=False,
+                 **kwargs):
+        """Write the projected operators to HDF5; see ``write_projected_operators_h5``."""
+        return _write_h5(self._representation, irreps, filename, irrep_matrices,
+                         self._channel_label, mode, use_generators, **kwargs)
+
+
+def _write_h5(representation, irreps, filename, irrep_matrices, channel, mode, use_generators,
+              **kwargs):
+    from .hdf5_output import write_projected_operators_h5
+
+    kwargs.setdefault("channel", channel)
+    return write_projected_operators_h5(
+        representation, irreps, filename, irrep_matrices=irrep_matrices, mode=mode,
+        use_generators=use_generators, **kwargs)
 
 
 def lambda_like_spinor(u, d, s):

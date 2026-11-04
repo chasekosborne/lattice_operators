@@ -1,6 +1,7 @@
 from sympy import *
 from operators.operators import *
 from operators.cubic_rotations import *
+from operators.hdf5_output import write_projected_operators_h5
 
 u = QuarkField.create('u')
 d = QuarkField.create('d')
@@ -68,3 +69,6 @@ op_rep.print_projected_operators_raw(
     irrep_accessor,
     operator_labels=op_labels,
 )
+
+write_projected_operators_h5(op_rep, ("G1g", "G1u", "Hg", "Hu"), "nucleon_baryon_operators.h5",
+                             irrep_matrices=irrep_accessor, mode="w")
