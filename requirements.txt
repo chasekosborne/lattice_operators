@@ -2,3 +2,4 @@ numpy>=1.24
 sortedcontainers>=2.4.0
 sympy>=1.12
 matplotlib>=3.7
+h5py>=3.8

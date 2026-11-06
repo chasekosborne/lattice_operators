@@ -63,3 +63,11 @@ P111_A1 = dib111.get_projection_matrix("A1", row=1, irrep_matrices=acc111, use_g
 print("P111 A1 row 1:")
 pprint(P111_A1)
 dib111.print_projected_operators(("A1", "A2", "E"), acc111, use_generators=True)
+
+# operators at different momenta go under the same channel; separate files keep them apart
+dib001.write_h5(("A1", "A2", "E"), "h_dibaryon_p001_operators.h5", irrep_matrices=acc001,
+                mode="w", use_generators=True)
+dib011.write_h5(("A1", "A2", "B1", "B2"), "h_dibaryon_p011_operators.h5",
+                irrep_matrices=acc011, mode="w", use_generators=True)
+dib111.write_h5(("A1", "A2", "E"), "h_dibaryon_p111_operators.h5", irrep_matrices=acc111,
+                mode="w", use_generators=True)

@@ -444,7 +444,11 @@ class Momentum(Array):
     return "P=({},{},{})".format(self.x, self.y, self.z)
 
   def __repr__(self):
-    return "P{{{}_{}_{}}}".format(self.x, self.y, self.z)
+    try:
+      return self._repr
+    except AttributeError:
+      self._repr = "P{{{}_{}_{}}}".format(self.x, self.y, self.z)
+      return self._repr
 
   def __hash__(self):
     return hash(self.__repr__())

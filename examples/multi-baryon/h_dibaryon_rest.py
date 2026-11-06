@@ -50,3 +50,6 @@ print("P0 shells (0,0)+(1,1)+(2,2)+(3,3), A1g row 1:")
 pprint(P_A1g)
 print("Projected operators:")
 dib.print_projected_operators(("A1g",), acc, use_generators=True)
+
+dib.write_h5(("A1g", "Eg"), "h_dibaryon_rest_operators.h5", irrep_matrices=acc,
+             mode="w", use_generators=True)

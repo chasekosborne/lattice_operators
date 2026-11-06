@@ -1,4 +1,6 @@
+import functools
 import itertools
+import re as _re
 from sortedcontainers import SortedSet
 from collections import OrderedDict
 from collections import defaultdict
@@ -7,7 +9,7 @@ from sympy import zeros, Expr, Idx, get_indices, Array, conjugate, Matrix, Trans
 from sympy import eye, Integer, S, sqrt
 from sympy import simplify
 from sympy import gcd, cancel
-from sympy import Add
+from sympy import Add, Mul
 from sympy import Sum
 from sympy import expand
 
@@ -16,7 +18,7 @@ from .cubic_rotations import get_spinor_irrep_matrix, get_little_group_spinor_ir
 from .cubic_rotations import get_bosonic_irrep_matrix
 from .cubic_rotations import _GENERATORS as GENERATORS
 from .cubic_rotations import P0
-from .grassmann import grassmann_simplify, coefficients, GrassmannField
+from .grassmann import grassmann_simplify, coefficients, GrassmannField, GrassmannSymbol
 from .tensors import GammaRep
 
 # @ADH - May want to not allow for contracted operators?
@@ -55,6 +57,159 @@ class AntiQuarkField(GrassmannField):
 
   def colorRotate(self, matrix):
     return self.transformLeft(matrix, 0)
+
+
+# Spin-1/2 doublet irrep tables composed in the opposite order to W(R): their
+# partner multiplets transform with Gamma(R)^T instead of Gamma(R).
+TRANSPOSED_IRREP_TABLES = frozenset({"G1g", "G1u", "G1", "G"})
+
+
+# Symbol names follow GrassmannField.create: "<field>_{<color>,<dirac>}",
+# with anti-quark fields carrying a trailing "+" on <field>.
+_GRASSMANN_SYMBOL_NAME = _re.compile(r"^(?P<field>.+)_\{(?P<color>\d+),(?P<dirac>\d+)\}$")
+
+
+def parse_quark_symbol(symbol):
+  """Return ``(field, color, dirac, is_anti)`` for a quark-field Grassmann symbol."""
+  match = _GRASSMANN_SYMBOL_NAME.match(symbol.name)
+  if match is None:
+    raise ValueError("{} is not a quark-field Grassmann symbol".format(symbol))
+  field = match.group("field")
+  return field, int(match.group("color")), int(match.group("dirac")), field.endswith("+")
+
+
+def canonical_product_term(raw_term):
+  """Canonical ordering and sign for a product of per-hadron Grassmann terms.
+
+  Returns ``(None, 0)`` if the product vanishes by nilpotency.
+  """
+  # Swapping two blocks with n_i and n_j Grassmann factors gives (-1)^(n_i n_j):
+  # baryon blocks anticommute (a repeated one vanishes), meson blocks commute.
+  n_fields = [_number_of_grassmann_factors(t[1]) for t in raw_term]
+  seen = set()
+  for block, n in zip(raw_term, n_fields):
+    if block in seen and n % 2:
+      return None, 0
+    seen.add(block)
+
+  str_keys = [_block_sort_key(t) for t in raw_term]
+  order = sorted(range(len(raw_term)), key=lambda i: str_keys[i], reverse=True)
+  num_odd_swaps = sum(
+      1
+      for i in range(len(order))
+      for j in range(i + 1, len(order))
+      if order[i] > order[j] and n_fields[order[i]] * n_fields[order[j]] % 2
+  )
+  return tuple(raw_term[i] for i in order), (-1) ** num_odd_swaps
+
+
+def _number_of_grassmann_factors(monomial):
+  return len(monomial.args) if isinstance(monomial, Mul) else 1
+
+
+@functools.lru_cache(maxsize=None)
+def _block_sort_key(block):
+  return "{}__{}".format(block[0].__repr__(), block[1].__repr__())
+
+
+class GrassmannRotation:
+  """Action of one cubic rotation directly on Grassmann coefficient dictionaries.
+
+  Each quark field transforms as ``q[c, a] -> sum_b S(R)_{ab} q[c, b]`` (and
+  with ``S(R)^T`` for anti-quarks), so a rotated operator's coefficients follow
+  from those of the original by tensor products of single-quark spinor
+  matrices.  This gives the same result as ``Operator.rotate`` followed by
+  ``grassmann_simplify``, without any symbolic contraction.
+
+  Approach adapted from Sven Reibert's OpPy package
+  (``OpPy.construction.projectirrOps.getirrepOps``).
+  """
+
+  def __init__(self, element):
+    self.element = element
+    self._quark_mat = spinor_representation.rotation(element, False)
+    self._anti_quark_mat = spinor_representation.rotation(element, True)
+    self._symbols = dict()
+    self._momenta = dict()
+    self._blocks = dict()
+
+  def _symbol(self, symbol):
+    if symbol not in self._symbols:
+      field, color, dirac, is_anti = parse_quark_symbol(symbol)
+      if is_anti:
+        column = [self._anti_quark_mat[beta, dirac] for beta in range(4)]
+      else:
+        column = [self._quark_mat[dirac, beta] for beta in range(4)]
+      self._symbols[symbol] = [
+          (GrassmannSymbol("{}_{{{},{}}}".format(field, color, beta)), coeff)
+          for beta, coeff in enumerate(column) if coeff != 0
+      ]
+    return self._symbols[symbol]
+
+  def _momentum(self, momentum):
+    if momentum is None:
+      return None
+    if momentum not in self._momenta:
+      self._momenta[momentum] = self.element * momentum
+    return self._momenta[momentum]
+
+  def _block(self, block):
+    """Rotate a single ``(momentum, grassmann_monomial)`` term."""
+    if block not in self._blocks:
+      momentum, monomial = block
+      factors = monomial.args if isinstance(monomial, Mul) else (monomial,)
+      expansions = [self._symbol(f) for f in factors]
+      new_momentum = self._momentum(momentum)
+
+      rotated = defaultdict(int)
+      for combo in itertools.product(*expansions):
+        syms = [sym for sym, _ in combo]
+        if len(set(syms)) < len(syms):
+          continue
+        order = sorted(range(len(syms)), key=lambda i: syms[i].name)
+        num_inversions = sum(
+            1
+            for i in range(len(order))
+            for j in range(i + 1, len(order))
+            if order[i] > order[j]
+        )
+        coeff = (-1) ** num_inversions
+        for _, c in combo:
+          coeff = coeff * c
+        rotated[(new_momentum, Mul(*[syms[i] for i in order]))] += coeff
+      self._blocks[block] = dict(rotated)
+    return self._blocks[block]
+
+  def _term(self, term):
+    # Operator terms are (momentum, monomial); OperatorMul terms are tuples
+    # of such blocks, one per hadron.
+    if not isinstance(term[0], tuple):
+      return self._block(term)
+
+    rotated = defaultdict(int)
+    for combo in itertools.product(*[self._block(block).items() for block in term]):
+      canonical, sign = canonical_product_term(tuple(block for block, _ in combo))
+      if canonical is None:
+        continue
+      coeff = sign
+      for _, c in combo:
+        coeff = coeff * c
+      rotated[canonical] += coeff
+    return rotated
+
+  def coefficients(self, coeffs):
+    """Rotate a ``{term: coefficient}`` dictionary, dropping vanishing terms."""
+    rotated = defaultdict(int)
+    for term, coeff in coeffs.items():
+      for new_term, factor in self._term(term).items():
+        rotated[new_term] += coeff * factor
+
+    out = dict()
+    for term, coeff in rotated.items():
+      coeff = expand(coeff)
+      if coeff != 0:
+        out[term] = coeff
+    return out
 
 
 class DiracIdx(Idx):
@@ -201,8 +356,7 @@ class OperatorRepresentation:
       self._rep_matrices[lg_element] = eye(self.dimension)
       self._characters[lg_element] = self.dimension
     else:
-      transformed_basis = self.basis.rotate(lg_element)
-      self._rep_matrices[lg_element] = self.basis.matrix.pinv() * transformed_basis.matrix
+      self._rep_matrices[lg_element] = self.basis.pinv * self.basis.rotated_matrix(lg_element)
 
 
   def irreducible(self, use_generators=False):
@@ -254,6 +408,29 @@ class OperatorRepresentation:
       raise ValueError("Requested irrep column is out of bounds")
 
     return gamma_R[row, col]
+
+  def _getInverseIrrepMatrix(self, irrep, lg_element, irrep_matrices):
+    """Gamma(R)^{-1} = Gamma(R^{-1}).
+
+    Equals Gamma(R)^dagger only for unitary tables; the Eg, T2g, G2 and C3v E
+    tables are not unitary.  ``CubicRotation.inverse`` cannot be used for the
+    lookup because it does not track the double-cover sheet.
+    """
+    try:
+      cache = self._inverse_irrep_cache
+    except AttributeError:
+      cache = self._inverse_irrep_cache = dict()
+    key = (id(irrep_matrices), irrep, lg_element)
+    if key not in cache:
+      gamma_R = self._getIrrepMatrix(irrep, lg_element, irrep_matrices=irrep_matrices)
+      gamma_H = gamma_R.H
+      if (gamma_H * gamma_R - eye(gamma_R.rows)).applyfunc(simplify).is_zero_matrix:
+        inverse = gamma_H
+      else:
+        inverse = gamma_R.inv().applyfunc(simplify)
+      # keep the accessor alive so its id cannot be reused by another accessor
+      cache[key] = (irrep_matrices, inverse)
+    return cache[key][1]
 
   def getDiracPauliIrrepMatrices(self, include_odd_parity=False):
     raise NotImplementedError(
@@ -327,11 +504,9 @@ class OperatorRepresentation:
 
     P = zeros(self.dimension)
     for R in self.little_group.elements:
-      gamma_rr = self._getIrrepMatrixElement(
-          irrep, R, row_idx, irrep_matrices=irrep_matrices
-      )
+      inverse = self._getInverseIrrepMatrix(irrep, R, irrep_matrices)
       W_R = self.getRepresentationMatrix(R, use_generators)
-      P += conjugate(gamma_rr) * W_R.T
+      P += inverse[row_idx, row_idx] * W_R.T
 
     P = simplify(P * S(d_Lambda) / S(g))
     if int(d_Lambda) > 2:
@@ -344,31 +519,25 @@ class OperatorRepresentation:
   ):
     """Return row-mixing projection matrix P^(Lambda,target<-source).
 
-    Implements the coefficient map used in step (e), using off-diagonal irrep
-    matrix elements Gamma_{target,source}(R).
+    Implements the coefficient map used in step (e), using off-diagonal
+    elements of Gamma(R)^{-1}.  The resulting multiplet transforms with the
+    tabulated Gamma(R), or with Gamma(R)^T for the spin-1/2 doublet tables in
+    ``TRANSPOSED_IRREP_TABLES``, which are composed in the opposite order.
     """
-    # keep projection rows unchanged and remap only for partner-row transport.
-    if irrep in ("G1g", "G1u"):
-      row_map = {1: 2, 2: 1}
-      if target_row not in row_map or source_row not in row_map:
-        raise ValueError("G1 irreps only have rows 1 and 2")
-      target_idx = row_map[target_row] - 1
-      source_idx = row_map[source_row] - 1
-    else:
-      target_idx = target_row - 1
-      source_idx = source_row - 1
-    g = self.little_group.order
     d_lambda = self.little_group.getCharacter(irrep, E)
+    if not (1 <= target_row <= int(d_lambda) and 1 <= source_row <= int(d_lambda)):
+      raise ValueError("{} only has rows 1 to {}".format(irrep, d_lambda))
+    if irrep in TRANSPOSED_IRREP_TABLES:
+      i_idx, j_idx = target_row - 1, source_row - 1
+    else:
+      i_idx, j_idx = source_row - 1, target_row - 1
+    g = self.little_group.order
 
     P = zeros(self.dimension)
     for R in self.little_group.elements:
-      gamma_ts = self._getIrrepMatrixElement(
-          irrep, R, target_idx, source_idx, irrep_matrices=irrep_matrices
-      )
+      inverse = self._getInverseIrrepMatrix(irrep, R, irrep_matrices)
       W_R = self.getRepresentationMatrix(R, use_generators)
-      # conventions here are aligned with getProjectionMatrix, which uses
-      # conjugated irrep matrix elements together with W(R)^T.
-      P += conjugate(gamma_ts) * W_R.T
+      P += inverse[i_idx, j_idx] * W_R.T
 
     P = simplify(P * S(d_lambda) / S(g))
     if int(d_lambda) > 2:
@@ -642,6 +811,8 @@ class OperatorBasis:
 
     self._vectors = dict()
     self._matrix = None
+    self._pinv = None
+    self._term_index = None
 
   @property
   def momentum(self):
@@ -688,6 +859,31 @@ class OperatorBasis:
       self._matrix = Matrix(mat).T
 
     return self._matrix
+
+  @property
+  def pinv(self):
+    if self._pinv is None:
+      self._pinv = self.matrix.pinv()
+    return self._pinv
+
+  @property
+  def term_index(self):
+    if self._term_index is None:
+      self._term_index = {term: row for row, term in enumerate(self.grassmann_basis)}
+    return self._term_index
+
+  def rotated_matrix(self, lg_element):
+    """Equivalent to ``self.rotate(lg_element).matrix``, via ``GrassmannRotation``."""
+    rotation = GrassmannRotation(lg_element)
+    index = self.term_index
+    mat = zeros(len(index), self.dimension)
+    for col, operator in enumerate(self.operators):
+      for term, coeff in rotation.coefficients(operator.coefficients).items():
+        row = index.get(term)
+        if row is None:
+          raise ValueError("Basis is not complete")
+        mat[row, col] = coeff
+    return mat
 
   @property
   def bosonic(self):
@@ -1084,34 +1280,14 @@ class OperatorMul:
       coeffs_dict = defaultdict(int)
 
       for raw_term in self.raw_terms:
-        # Vanishes if any two sub-terms are identical (Grassmann nilpotency)
-        if len(set(raw_term)) < len(raw_term):
+        canonical_term, sign = canonical_product_term(raw_term)
+        if canonical_term is None:
           continue
 
-        # Product of individual coefficients
         coeff = S.One
         for i, t in enumerate(raw_term):
           coeff = coeff * op_coeffs[i][t]
 
-        # Sort sub-terms into canonical (descending) order by string key and
-        # compute the sign from the permutation.  Each swap of two fermionic
-        # baryon blocks (each with an odd number of quarks) contributes -1, so
-        # the sign is simply (-1)^(number_of_inversions) = parity of the sort.
-        str_keys = [
-          "{}__{}".format(t[0].__repr__(), t[1].__repr__()) for t in raw_term
-        ]
-        order = sorted(range(len(raw_term)), key=lambda i: str_keys[i], reverse=True)
-
-        # Count inversions to determine permutation parity
-        num_inversions = sum(
-          1
-          for i in range(len(order))
-          for j in range(i + 1, len(order))
-          if order[i] > order[j]
-        )
-        sign = S.NegativeOne ** num_inversions
-
-        canonical_term = tuple(raw_term[i] for i in order)
         coeffs_dict[canonical_term] += sign * coeff
 
       self._coefficients = {k: v for k, v in coeffs_dict.items() if expand(v)}

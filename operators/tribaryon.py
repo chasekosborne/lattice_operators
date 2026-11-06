@@ -13,6 +13,7 @@ from .dibaryon import (
     SPIN_TRIPLET,
     SPIN_ALL,
     _constituent_metadata,
+    _write_h5,
     baryon_field,
     momentum_shell,
     momentum_shell_pairs,
@@ -231,6 +232,12 @@ class TriBaryon:
             operator_labels=self._labels,
             use_generators=use_generators,
         )
+
+    def write_h5(self, irreps, filename, irrep_matrices=None, mode="a", use_generators=False,
+                 **kwargs):
+        """Write the projected operators to HDF5; see ``write_projected_operators_h5``."""
+        return _write_h5(self._representation, irreps, filename, irrep_matrices,
+                         self._channel_label, mode, use_generators, **kwargs)
 
 
 def nucleon_p_spinor(u, d, label="proton"):
